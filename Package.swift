@@ -37,24 +37,70 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0")
     ],
     targets: [
+        // XCFrameworks cross-compiled for iOS device + Simulator (arm64) by
+        // scripts/setup_native_deps_ios.sh -- see docs/iOS-Build.md section 5.
+        // Declared as their own binaryTargets rather than trying to extend
+        // DCMTKWrapper's existing unsafeFlags-based -L/-l linking (below) to
+        // iOS, since unsafeFlags aren't usable by a package consumed as a
+        // dependency the way an iOS Xcode App target consumes this one --
+        // XCFrameworks/binaryTargets are SwiftPM's supported mechanism for
+        // that. Each is wired in below as an iOS-only dependency of
+        // DCMTKWrapper via `.when(platforms: [.iOS])`. Referencing `.iOS` in
+        // a dependency condition does NOT require iOS to be listed in this
+        // file's top-level `platforms:` array below (that array only
+        // controls minimum deployment targets / offered Xcode destinations)
+        // -- so this wiring is deliberately inert until iOS is actually
+        // added to `platforms:` and a real Xcode iOS App target exists to
+        // consume it (docs/iOS-Build.md steps 0-3). That's intentional: only
+        // add `.iOS(.v17)` back to `platforms:` in that same sitting, per the
+        // NOTE above `platforms:` below, and only once DCMTKHelper.mm's
+        // AppKit-only code (see docs/iOS-Build.md "Known blockers") has
+        // actually been fixed to compile for iOS too -- these binaryTargets
+        // alone don't make DCMTKWrapper's *source* compile for iOS yet.
+        .binaryTarget(name: "DcmdataXCFramework", path: "libs/xcframeworks/dcmdata.xcframework"),
+        .binaryTarget(name: "DcmimageXCFramework", path: "libs/xcframeworks/dcmimage.xcframework"),
+        .binaryTarget(name: "DcmimgleXCFramework", path: "libs/xcframeworks/dcmimgle.xcframework"),
+        .binaryTarget(name: "DcmjpegXCFramework", path: "libs/xcframeworks/dcmjpeg.xcframework"),
+        .binaryTarget(name: "DcmjplsXCFramework", path: "libs/xcframeworks/dcmjpls.xcframework"),
+        .binaryTarget(name: "DcmtkcharlsXCFramework", path: "libs/xcframeworks/dcmtkcharls.xcframework"),
+        .binaryTarget(name: "Ijg8XCFramework", path: "libs/xcframeworks/ijg8.xcframework"),
+        .binaryTarget(name: "Ijg12XCFramework", path: "libs/xcframeworks/ijg12.xcframework"),
+        .binaryTarget(name: "Ijg16XCFramework", path: "libs/xcframeworks/ijg16.xcframework"),
+        .binaryTarget(name: "OficonvXCFramework", path: "libs/xcframeworks/oficonv.xcframework"),
+        .binaryTarget(name: "OflogXCFramework", path: "libs/xcframeworks/oflog.xcframework"),
+        .binaryTarget(name: "OfstdXCFramework", path: "libs/xcframeworks/ofstd.xcframework"),
+        .binaryTarget(name: "Openjp2XCFramework", path: "libs/xcframeworks/openjp2.xcframework"),
+
         .target(
             name: "DCMTKWrapper",
-            dependencies: [],
-            // NOTE (iOS port): these settings are unconditional/macOS-only in
-            // effect, same as before this package was restructured for iOS --
-            // libs/dcmtk and libs/openjpeg only contain macOS arm64 static
-            // libraries today, and this target can't build for iOS at all yet
-            // regardless (DCMTKHelper.mm itself is still hardcoded to
-            // AppKit/NSImage -- see docs/iOS-Build.md). An earlier version of
-            // this file wrapped every setting below in `.when(platforms:
-            // [.macOS])`, intending to prepare for iOS-conditioned settings
-            // being added later, but that broke the macOS Xcode build (a
-            // `.headerSearchPath` gated this way stopped resolving even
-            // though the target file it pointed at genuinely existed on disk)
-            // and was reverted. When iOS support is actually implemented,
-            // linking iOS-built DCMTK/OpenJPEG will most likely go through a
-            // `.binaryTarget` XCFramework instead of conditioning these
-            // existing settings, so nothing is lost by reverting.
+            dependencies: [
+                .target(name: "DcmdataXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "DcmimageXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "DcmimgleXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "DcmjpegXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "DcmjplsXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "DcmtkcharlsXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "Ijg8XCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "Ijg12XCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "Ijg16XCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "OficonvXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "OflogXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "OfstdXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "Openjp2XCFramework", condition: .when(platforms: [.iOS]))
+            ],
+            // NOTE (iOS port): cSettings/cxxSettings below are left
+            // unconditional (pointing at the macOS install under
+            // libs/dcmtk|openjpeg/include) even for the iOS build -- DCMTK/
+            // OpenJPEG headers are architecture-independent C/C++ text, so
+            // the exact same header content works for compiling either
+            // platform's sources, and scripts/setup_native_deps_ios.sh
+            // already requires scripts/setup_native_deps.sh (macOS) to have
+            // been run first (it reuses that build's generated arith.h), so
+            // this path is guaranteed to exist by the time an iOS build is
+            // attempted. This deliberately avoids reintroducing the
+            // `.when(platforms: [.macOS])`-on-headerSearchPath bug noted
+            // below (that failure was specific to conditioning a
+            // headerSearchPath -- unrelated to leaving one unconditional).
             cSettings: [
                 .headerSearchPath("../../libs/dcmtk/include"),
                 .headerSearchPath("../../libs/openjpeg/include/openjpeg-2.5")
@@ -64,22 +110,39 @@ let package = Package(
                 .headerSearchPath("../../libs/openjpeg/include/openjpeg-2.5"),
                 .define("DCMTK_BUILD_IN_PROGRESS")
             ],
+            // NOTE (iOS port): an earlier version of this file wrapped every
+            // setting in this target in `.when(platforms: [.macOS])`,
+            // intending to prepare for iOS-conditioned settings being added
+            // later, but that broke the macOS Xcode build (a
+            // `.headerSearchPath` gated this way stopped resolving even
+            // though the target file it pointed at genuinely existed on
+            // disk) and was reverted -- see the cSettings/cxxSettings NOTE
+            // above for why that's not being repeated here. linkerSettings
+            // below ARE now conditioned per-platform, since that's a
+            // different setting type than what broke before, and is
+            // unavoidable here: the macOS-only -L path/library names below
+            // can't be left unconditional without breaking an iOS link
+            // (there is no macOS-built libdcmimage.a etc. reachable for an
+            // iOS target, nor should there be -- iOS links the
+            // XCFramework binaryTarget dependencies above instead).
             linkerSettings: [
-                .unsafeFlags(["-Llibs/dcmtk/lib", "-Llibs/openjpeg/lib"]),
-                .linkedLibrary("dcmimage"),
-                .linkedLibrary("dcmimgle"),
-                .linkedLibrary("dcmdata"),
-                .linkedLibrary("oflog"),
-                .linkedLibrary("ofstd"),
-                .linkedLibrary("dcmjpeg"),
-                .linkedLibrary("dcmjpls"),
-                .linkedLibrary("dcmtkcharls"),
-                .linkedLibrary("ijg8"),
-                .linkedLibrary("ijg12"),
-                .linkedLibrary("ijg16"),
-                .linkedLibrary("oficonv"),
-                .linkedLibrary("z"),
-                .linkedLibrary("openjp2")
+                .unsafeFlags(["-Llibs/dcmtk/lib", "-Llibs/openjpeg/lib"], .when(platforms: [.macOS])),
+                .linkedLibrary("dcmimage", .when(platforms: [.macOS])),
+                .linkedLibrary("dcmimgle", .when(platforms: [.macOS])),
+                .linkedLibrary("dcmdata", .when(platforms: [.macOS])),
+                .linkedLibrary("oflog", .when(platforms: [.macOS])),
+                .linkedLibrary("ofstd", .when(platforms: [.macOS])),
+                .linkedLibrary("dcmjpeg", .when(platforms: [.macOS])),
+                .linkedLibrary("dcmjpls", .when(platforms: [.macOS])),
+                .linkedLibrary("dcmtkcharls", .when(platforms: [.macOS])),
+                .linkedLibrary("ijg8", .when(platforms: [.macOS])),
+                .linkedLibrary("ijg12", .when(platforms: [.macOS])),
+                .linkedLibrary("ijg16", .when(platforms: [.macOS])),
+                .linkedLibrary("oficonv", .when(platforms: [.macOS])),
+                .linkedLibrary("openjp2", .when(platforms: [.macOS])),
+                // z (zlib) is a system library present in both the macOS and
+                // iOS SDKs -- needed on both, so left unconditional.
+                .linkedLibrary("z")
             ]
         ),
         // Shared library target: every view, model, and rendering type, plus

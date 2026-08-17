@@ -94,22 +94,24 @@ Wiring up the target gets the project *structurally* ready, but it will not
 build successfully yet, because of work still in progress elsewhere in this
 port:
 
-- **DCMTK/OpenJPEG are not built for iOS yet.** `Package.swift`'s
-  `DCMTKWrapper` target currently only points at the macOS static libraries in
-  `libs/dcmtk` and `libs/openjpeg`, unconditionally (an earlier revision
-  conditioned these settings on `.macOS` via `.when(platforms:)` to prepare
-  for iOS, but that broke the macOS build -- a header search path gated this
-  way stopped resolving even though the file it pointed at genuinely existed
-  on disk -- so it was reverted; see the NOTE in `Package.swift` itself).
-  Building for an iOS/iOS Simulator destination will fail at the **compile**
-  step, not just linking -- `DCMTKHelper.mm` unconditionally `#include`s DCMTK
-  headers, and there's no iOS header search path configured at all. This
-  needs DCMTK + OpenJPEG cross-compiled for `arm64` (device) and
-  `arm64`/`x86_64` (simulator) -- tracked as its own task. Once built, prefer
-  packaging them as an **XCFramework** and adding a `.binaryTarget` rather
-  than trying to extend the current `unsafeFlags`-based `-L` linking to iOS,
-  since SwiftPM/Xcode reject `unsafeFlags` in a package that's consumed as a
-  dependency the way this target now is.
+- ~~DCMTK/OpenJPEG are not built for iOS yet.~~ **Done.** `scripts/setup_native_deps_ios.sh`
+  cross-compiles DCMTK 3.6.8 + OpenJPEG 2.5.0 for iOS device (`arm64`) and iOS
+  Simulator (`arm64` only -- the `x86_64` Simulator slice was dropped; see the
+  NOTE at the top of that script for why), packages each library as an
+  XCFramework under `libs/xcframeworks/`, and `Package.swift`'s `DCMTKWrapper`
+  target now depends on those XCFrameworks via `.binaryTarget` (iOS-only,
+  gated with `.when(platforms: [.iOS])`) alongside its existing macOS
+  `unsafeFlags`-based `-L`/`-l` linking (now gated to `.macOS` instead of
+  left unconditional). Getting the cross-compile itself working took several
+  rounds of real build-output-driven fixes -- see the NOTE comments through
+  `scripts/setup_native_deps_ios.sh` for the full list (a DCMTK/iOS Darwin
+  feature-test-macro gap, several compiler-quirk probes with no tolerance for
+  their own expected "no" answer, a fundamentally un-cross-compilable runtime
+  probe worked around by reusing the macOS build's already-generated
+  `arith.h`, and several link-time false positives for libraries that don't
+  exist on Apple platforms at all) if a similar issue resurfaces.
+  This alone does **not** make `DCMTKWrapper` compile for iOS yet, though --
+  see the next bullet.
 - **`DCMTKHelper.convertDICOM(toNSImage:)` and `-renderImageWithWidth:...`**
   (the Objective-C++ bridge in `Sources/DCMTKWrapper/DCMTKHelper.mm`/`.h`) are
   hardcoded to return `NSImage`, i.e. they only compile against AppKit. This
@@ -147,38 +149,55 @@ hard part: CMake's `try_run()`-based configure checks (endianness, type
 sizes, etc.) can't execute an iOS binary on the macOS build host, and getting
 that wrong tends to fail silently or hang rather than producing a clear error.
 
-The two simulator slices are `lipo`'d together into one universal simulator
-library per DCMTK/OpenJPEG static library, then each library is packaged as
-an XCFramework (`libs/xcframeworks/<name>.xcframework`, device + simulator
-slices) via `xcodebuild -create-xcframework`.
+The simulator slice is packaged as an XCFramework alongside the device slice
+(`libs/xcframeworks/<name>.xcframework`, device + simulator slices) via
+`xcodebuild -create-xcframework`. (Originally planned as two simulator
+slices, `arm64` + `x86_64`, `lipo`'d together into one universal simulator
+library -- the `x86_64` slice was dropped; see the NOTE at the top of the
+script for why.)
 
-**This script has not been run.** I wrote it without a Mac/Xcode/iOS SDK
-available to actually execute or debug it, so treat it as a first draft to
-iterate on with real build output, not a known-working recipe. Specific risk
-areas to expect trouble in, roughly in the order they're likely to bite:
+**Status: done, build-tested, and producing working XCFrameworks** --
+`libs/xcframeworks/` now contains every library `Package.swift`'s
+`DCMTKWrapper` target needs (`dcmdata`, `dcmimage`, `dcmimgle`, `dcmjpeg`,
+`dcmjpls`, `dcmtkcharls`, `ijg8`, `ijg12`, `ijg16`, `oficonv`, `oflog`,
+`ofstd`, `openjp2`), plus `dcmnet`/`dcmqrdb`/`dcmtls` for the future PACS
+networking task. This took several rounds of real-build-output-driven fixes
+beyond what the risk areas below anticipated -- see the NOTE comments
+throughout `scripts/setup_native_deps_ios.sh` for the full, specific list
+(each `-D<VAR>=<value>` cache seed and source patch documents exactly what
+it fixes and why) if a similar issue resurfaces, e.g. when adding `dcmnet`
+to the actual link list for the PACS networking task.
 
-1. **DCMTK's own CMake config may not fully support iOS cross-compilation
-   out of the box**, even with ios-cmake handling the toolchain mechanics.
-   DCMTK 3.6.8 predates widespread iOS-target CMake support; some of its
-   `configure`-style checks may need additional cache variables pre-seeded
-   (ios-cmake's README documents the pattern for this) or, in the worst case,
-   small source patches. Existing "DCMTK for iOS" community projects (search
-   GitHub/CocoaPods) that have already solved this are worth checking before
-   patching from scratch.
+Original anticipated risk areas, kept for reference (all of #1 and #3 did in
+fact bite, in the specific forms documented in the script; #2 hasn't been
+investigated yet since `dcmnet` isn't linked by anything yet):
+
+1. **DCMTK's own CMake config didn't fully support iOS cross-compilation out
+   of the box**, even with ios-cmake handling the toolchain mechanics. This
+   needed several cache variables pre-seeded (DCMTK's own configure checks
+   have no way to determine some answers when cross-compiling, and in one
+   case -- `HAVE_DECLSPEC_DEPRECATED_MSG` and similar compiler-quirk probes
+   -- no tolerance for compile failure being their own normal, expected
+   answer) plus one direct source patch (`CMake/dcmtkPrepare.cmake`'s
+   Darwin/iOS flag-detection branch was missing `-D_DARWIN_C_SOURCE`, which
+   the sibling macOS branch already had).
 2. **`dcmnet`'s use of POSIX networking APIs** should mostly work on iOS
    (it's POSIX sockets, which iOS supports), but hasn't been checked
    line-by-line for anything Darwin/macOS-specific that iOS's sandboxed
    networking stack might reject or behave differently for -- worth a close
    look before wiring up the PACS networking task on top of it.
-3. **The lipo/XCFramework packaging step assumes both simulator slices build
-   the exact same set of `.a` files with matching names** -- if DCMTK's CMake
-   enables/disables optional libraries differently per-arch (it shouldn't,
-   but hasn't been observed), `lipo_all`'s mismatch warning will say so.
+3. **The lipo/XCFramework packaging step assumed both simulator slices would
+   build the exact same set of `.a` files with matching names** -- moot now
+   that the `x86_64` simulator slice has been dropped (see above), but if it
+   were ever added back, this is still a real risk worth checking for.
 
-Once real `.xcframework` outputs exist, `Package.swift`'s `DCMTKWrapper`
-target needs a follow-up change: replace its `unsafeFlags`-based `-L` linker
-flags (macOS-only today) with `.binaryTarget` entries for the iOS platform,
-since `unsafeFlags` make a package unusable as a dependency the way the iOS
-Xcode target now depends on this one -- this wasn't done yet since it should
-be wired up against XCFrameworks that actually exist and have been confirmed
-to contain the expected architecture slices, not speculatively.
+`Package.swift`'s `DCMTKWrapper` target now depends on these XCFrameworks via
+`.binaryTarget` entries, gated to iOS only (`.when(platforms: [.iOS])`),
+alongside its existing macOS `unsafeFlags`-based `-L`/`-l` linking (now gated
+to `.macOS` instead of left unconditional) -- see the NOTE comments in
+`Package.swift` itself for the full reasoning. This wiring is deliberately
+inert until iOS is actually added back to `platforms:` (step 0 above) and a
+real Xcode iOS App target exists to consume it -- and even then,
+`DCMTKWrapper` still won't compile for iOS until the AppKit-only code in
+`DCMTKHelper.mm` (see the "Known blockers" list above) is fixed, independent
+of these XCFrameworks now existing and being correctly wired in.
