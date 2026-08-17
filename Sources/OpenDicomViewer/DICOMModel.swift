@@ -25,7 +25,11 @@
 import SwiftUI
 import Combine
 import DCMTKWrapper
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import simd
 import UniformTypeIdentifiers
 
@@ -54,10 +58,21 @@ struct DicomImageContext: Identifiable, Equatable {
         return lhs.url == rhs.url
     }
 
-    /// Single-frame files group by SeriesInstanceUID; multi-frame files get a
-    /// per-file key so each cine becomes its own sidebar series.
+    /// Single-frame files group by SeriesInstanceUID + SeriesNumber; multi-frame
+    /// files get a per-file key so each cine becomes its own sidebar series.
+    ///
+    /// SeriesNumber is folded in alongside SeriesInstanceUID as a defensive
+    /// measure: some real-world exports (seen from certain de-identification/
+    /// anonymization tools) leave SeriesInstanceUID identical across what are
+    /// otherwise clearly distinct series (different SeriesNumber, different
+    /// image content/counts) -- grouping by SeriesInstanceUID alone silently
+    /// merges them into one giant series in the sidebar. SeriesNumber almost
+    /// always still varies correctly even when this happens, so including it
+    /// splits series that share a (bogus, duplicate) UID but have different
+    /// series numbers, while well-formed data -- where SeriesNumber is
+    /// consistent within one real series -- groups exactly as before.
     var seriesGroupingKey: String {
-        numberOfFrames > 1 ? "\(seriesUID)#mf#\(url.path)" : seriesUID
+        numberOfFrames > 1 ? "\(seriesUID)#mf#\(url.path)" : "\(seriesUID)#\(seriesNumber)"
     }
 
     func displaySeriesDescription(baseDescription: String) -> String {
@@ -107,7 +122,7 @@ func cross(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> SIMD3<Double> {
 // MARK: - Model
 class DICOMModel: ObservableObject {
     // Current State
-    @Published var image: NSImage?
+    @Published var image: PlatformImage?
     @Published var tags: [DicomElement] = []
     @Published var errorMessage: String?
     @Published var isLoading: Bool = false
@@ -238,7 +253,7 @@ class DICOMModel: ObservableObject {
     }
 
     // Caching
-    private let imageCache = NSCache<NSURL, NSImage>()
+    private let imageCache = NSCache<NSURL, PlatformImage>()
     private let rawDataCache = NSCache<NSURL, NSData>()
     private let dcmtkCache = NSCache<NSURL, DCMTKImageObject>()
     // Track W/L params for cached images: [URL: (WW, WC)]
@@ -266,7 +281,7 @@ class DICOMModel: ObservableObject {
     private var lastPrecachedSeriesIndex: Int = -1
     
     // Series Thumbnails
-    @Published var seriesThumbnails: [String: NSImage] = [:]
+    @Published var seriesThumbnails: [String: PlatformImage] = [:]
     private let thumbnailQueue: OperationQueue = {
         let q = OperationQueue()
         q.maxConcurrentOperationCount = 2
@@ -347,7 +362,12 @@ class DICOMModel: ObservableObject {
         self.panels = [firstPanel]
         self.activePanelID = firstPanel.id
 
-        // Monitor Shift key globally for group selection overlay
+        // Monitor Shift key globally for group selection overlay.
+        // NSEvent global modifier-key monitoring is a macOS-only (hardware keyboard) concept;
+        // there is no direct touch-UI equivalent. iOS group-selection will need its own
+        // gesture-driven trigger (e.g. a toolbar toggle) as part of the touch-native
+        // interaction layer work.
+        #if os(macOS)
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             guard let self = self else { return event }
             let shiftDown = event.modifierFlags.contains(.shift)
@@ -361,13 +381,16 @@ class DICOMModel: ObservableObject {
             }
             return event
         }
+        #endif
 
     }
 
     deinit {
+        #if os(macOS)
         if let monitor = flagsMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        #endif
         for (_, timer) in cineTimers {
             timer.invalidate()
         }
@@ -375,7 +398,7 @@ class DICOMModel: ObservableObject {
     }
     
     // Helper for Thumbnail Preview
-    func getCachedImage(at index: Int) -> NSImage? {
+    func getCachedImage(at index: Int) -> PlatformImage? {
         guard isValidIndex() else { return nil }
         // Use current series
         let images = allSeries[currentSeriesIndex].images
@@ -399,7 +422,7 @@ class DICOMModel: ObservableObject {
             
             // Render
             // Passing a small width/height would require a new scaler. 
-            // renderImage generates full size, but NSImage handles scaling in UI.
+            // renderImage generates full size, but PlatformImage handles scaling in UI.
             // Performance: 512x512 render is fast (~ms).
             if let rendered = renderImage(width: w, height: h, pixelData: raw, ww: autoWW, wc: autoWC) {
                 return rendered
@@ -466,7 +489,7 @@ class DICOMModel: ObservableObject {
                             let frameStart = pos + 8
                             if frameStart + frameLen <= count {
                                 let jpegData = headerData[frameStart..<(frameStart + frameLen)]
-                                if let thumb = NSImage(data: jpegData) {
+                                if let thumb = PlatformImage(data: jpegData) {
                                     DispatchQueue.main.async {
                                         self.seriesThumbnails[series.id] = thumb
                                     }
@@ -532,7 +555,7 @@ class DICOMModel: ObservableObject {
                         compressedData = pd
                     }
                     
-                    if let cData = compressedData, let rawImg = NSImage(data: cData) {
+                    if let cData = compressedData, let rawImg = PlatformImage(data: cData) {
                          // Apply Auto-Leveling to raw compressed image
                          // Because typically these are raw captures (dark)
                          let leveledImg = self.autoLevelImage(rawImg) ?? rawImg
@@ -542,6 +565,11 @@ class DICOMModel: ObservableObject {
                          }
                          return
                     } else {
+                        // NOTE (iOS port): DCMTKHelper.convertDICOM(toNSImage:) is the Objective-C++
+                        // bridge in DCMTKWrapper, which is hardcoded to NSImage/AppKit today. It isn't
+                        // touched by this Swift-side PlatformImage pass -- the wrapper itself needs to
+                        // return a CGImageRef (or be duplicated per-platform) as part of cross-compiling
+                        // DCMTK for iOS. Tracked as a follow-up to the DCMTK iOS build task.
                         if let img = DCMTKHelper.convertDICOM(toNSImage: url.path) {
                              let leveledImg = self.autoLevelImage(img) ?? img
                              DispatchQueue.main.async {
@@ -610,7 +638,9 @@ class DICOMModel: ObservableObject {
                                     bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
                                     provider: provider, decode: nil, shouldInterpolate: false,
                                     intent: .defaultIntent) {
-                    let rawImg = NSImage(cgImage: cg, size: NSSize(width: Double(w), height: Double(h)))
+                    guard let rawImg = PlatformImageFactory.make(cgImage: cg, displaySize: CGSize(width: Double(w), height: Double(h))) else {
+                        return
+                    }
                     // Apply Auto-Leveling to raw render as well (handles outliers/padding)
                     let leveledImg = self.autoLevelImage(rawImg) ?? rawImg
 
@@ -627,9 +657,9 @@ class DICOMModel: ObservableObject {
     // Legacy generatePythonThumbnail removed
 
 
-    // Helper: Auto-Level an NSImage (Contrast Stretch)
-    private func autoLevelImage(_ input: NSImage) -> NSImage? {
-        guard let cgImg = input.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+    // Helper: Auto-Level a PlatformImage (Contrast Stretch)
+    private func autoLevelImage(_ input: PlatformImage) -> PlatformImage? {
+        guard let cgImg = PlatformImageFactory.cgImage(from: input) else { return nil }
         
         let width = cgImg.width
         let height = cgImg.height
@@ -673,13 +703,14 @@ class DICOMModel: ObservableObject {
         
         // 3. Create Image
         if let newCG = ctx.makeImage() {
-            return NSImage(cgImage: newCG, size: input.size)
+            return PlatformImageFactory.make(cgImage: newCG, displaySize: input.size)
         }
         return nil
     }
     
     // MARK: - Load Methods
 
+    #if os(macOS)
     /// Show an Open panel and load the selected DICOM file or folder.
     func openFolder() {
         let panel = NSOpenPanel()
@@ -694,6 +725,12 @@ class DICOMModel: ObservableObject {
             load(url: url)
         }
     }
+    #else
+    // iOS has no NSOpenPanel equivalent for arbitrary folder/file browsing from a model class.
+    // The iOS entry point uses SwiftUI's `.fileImporter`/UIDocumentPickerViewController from the
+    // view layer instead, which then calls `load(url:)` directly with the picked URL. This is
+    // planned as part of the touch-native iOS interaction layer (see project task list).
+    #endif
 
     func load(url: URL) {
         let secured = url.startAccessingSecurityScopedResource()
@@ -1581,10 +1618,10 @@ class DICOMModel: ObservableObject {
         return (minVal, maxVal)
     }
     
-    /// Render raw pixel data to an NSImage with window/level tone mapping.
+    /// Render raw pixel data to a PlatformImage with window/level tone mapping.
     /// All pixel-format parameters are explicit to avoid stale model-level state.
     private func renderImage(width: Int, height: Int, pixelData: Data, ww: Double, wc: Double,
-                             bits: Int, spp: Int, signed: Bool, mono1: Bool) -> NSImage? {
+                             bits: Int, spp: Int, signed: Bool, mono1: Bool) -> PlatformImage? {
         guard width > 0, height > 0 else { return nil }
 
         // Handle RGB Protocol
@@ -1595,7 +1632,7 @@ class DICOMModel: ObservableObject {
              let provider = CGDataProvider(data: pixelData as CFData)
              if let p = provider,
                 let cgImg = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 24, bytesPerRow: width * 3, space: rgbColorSpace, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue), provider: p, decode: nil, shouldInterpolate: true, intent: .defaultIntent) {
-                 return NSImage(cgImage: cgImg, size: NSSize(width: Double(width), height: Double(height)))
+                 return PlatformImageFactory.make(cgImage: cgImg, displaySize: CGSize(width: Double(width), height: Double(height)))
              }
              return nil
         }
@@ -1680,13 +1717,13 @@ class DICOMModel: ObservableObject {
         }
 
         if let cgImage = context.makeImage() {
-            return NSImage(cgImage: cgImage, size: NSSize(width: Double(width), height: Double(height)))
+            return PlatformImageFactory.make(cgImage: cgImage, displaySize: CGSize(width: Double(width), height: Double(height)))
         }
         return nil
     }
 
     /// Convenience: render using model-level pixel format state (for legacy single-panel paths)
-    private func renderImage(width: Int, height: Int, pixelData: Data, ww: Double, wc: Double) -> NSImage? {
+    private func renderImage(width: Int, height: Int, pixelData: Data, ww: Double, wc: Double) -> PlatformImage? {
         return renderImage(width: width, height: height, pixelData: pixelData, ww: ww, wc: wc,
                            bits: self.bitDepth, spp: self.samples, signed: self.isSigned, mono1: self.isMonochrome1)
     }
@@ -1795,12 +1832,12 @@ class DICOMModel: ObservableObject {
              else if let pd = pixelData, pd.count > 8, let fragments = extractEncapsulatedData(pd), !fragments.isEmpty {
                  let combined = fragments.reduce(Data(), +)
                  // NOTE: We can only cache the combined stream here, but we can't easily turn it into RAW without proper decoding.
-                 // For now, if we have a JPEG stream, let's treat it as needing rendering or external conv if NSImage fails.
-                 if let _ = NSImage(data: combined) {
-                     // Native NSImage supports it. We can cache the NSImage?
-                     // Or just leave it. loadSingleFile is fast for native NSImage.
-                     // But user wants "NO LOADING". So we should cache the NSImage.
-                     if let img = NSImage(data: combined) {
+                 // For now, if we have a JPEG stream, let's treat it as needing rendering or external conv if PlatformImage fails.
+                 if let _ = PlatformImage(data: combined) {
+                     // Native PlatformImage supports it. We can cache the PlatformImage?
+                     // Or just leave it. loadSingleFile is fast for native PlatformImage.
+                     // But user wants "NO LOADING". So we should cache the PlatformImage.
+                     if let img = PlatformImage(data: combined) {
                          self.imageCache.setObject(img, forKey: url as NSURL)
                      }
                  } else {
@@ -3380,8 +3417,11 @@ class DICOMModel: ObservableObject {
                 ) {
                     let physW = Double(volume.width) * volume.spacingX
                     let physH = Double(volume.height) * volume.spacingY
-                    newImg.size = NSSize(width: CGFloat(volume.width), height: CGFloat(Double(volume.width) * physH / physW))
-                    panel.setDisplayImage(newImg)
+                    if let sized = PlatformImageFactory.resized(newImg, to: CGSize(width: CGFloat(volume.width), height: CGFloat(Double(volume.width) * physH / physW))) {
+                        panel.setDisplayImage(sized)
+                    } else {
+                        panel.setDisplayImage(newImg)
+                    }
                 }
             } else if let data = panel.rawPixelData {
                 // CPU fallback: re-render from raw pixel data
@@ -3557,14 +3597,14 @@ class DICOMModel: ObservableObject {
     }
 
     /// Get cached image for a panel's series at a given index (for thumbnail preview)
-    func getCachedImageForPanel(_ panel: PanelState, at index: Int) -> NSImage? {
+    func getCachedImageForPanel(_ panel: PanelState, at index: Int) -> PlatformImage? {
         guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return nil }
         // Multi-frame: index is a frame index within the single file; decode via the decoder.
         if panel.isMultiFrame && panel.numberOfFrames > 1 {
             guard index >= 0, index < panel.numberOfFrames else { return nil }
             guard let decoder = decoderForPanel(panel) else { return nil }
             if let cg = decoder.frameCGImage(at: index) {
-                return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+                return PlatformImageFactory.make(cgImage: cg, displaySize: CGSize(width: cg.width, height: cg.height))
             }
             return nil
         }
@@ -4123,7 +4163,7 @@ class DICOMModel: ObservableObject {
                 Float(panel.mipSlabPosition)
             )
 
-            var metalImage: NSImage? = nil
+            var metalImage: PlatformImage? = nil
             if let renderer = self.metalRenderer {
                 metalImage = renderer.renderProjection(
                     volume: volume,
@@ -4146,10 +4186,10 @@ class DICOMModel: ObservableObject {
                 let aspectRatio = physH / physW
                 let displayW = CGFloat(volume.width)
                 let displayH = CGFloat(Double(volume.width) * aspectRatio)
-                image.size = NSSize(width: displayW, height: displayH)
+                let sizedImage = PlatformImageFactory.resized(image, to: CGSize(width: displayW, height: displayH)) ?? image
 
                 BenchmarkLogger.shared.stop("mip_render", detail: "GPU slab=\(panel.mipSlabThickness), mode=\(mode)")
-                panel.setDisplayImage(image)
+                panel.setDisplayImage(sizedImage)
                 panel.imageWidth = volume.width
                 panel.imageHeight = volume.height
                 panel.rawPixelData = nil

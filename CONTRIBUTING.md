@@ -45,21 +45,28 @@ Tests live in `Tests/OpenDicomViewerTests/` and cover the DICOM parser, MPR engi
 
 ```
 Sources/
-├── OpenDicomViewer/           # Main application (SwiftUI + AppKit)
-│   ├── App.swift              # Entry point, menu bar commands
-│   ├── ContentView.swift      # Root view, keyboard shortcuts
-│   ├── DICOMModel.swift       # Core model: loading, caching, panels
-│   ├── SimpleDICOM.swift      # Pure-Swift DICOM parser
+├── OpenDicomViewer/            # OpenDicomViewerCore library target (SwiftUI; shared by every platform)
+│   ├── OpenDicomViewerCoreApp.swift  # Shared App scene, menu bar commands
+│   ├── PlatformCompat.swift    # Cross-platform (macOS/iOS) image/type aliases
+│   ├── ContentView.swift       # Root view, keyboard shortcuts
+│   ├── DICOMModel.swift        # Core model: loading, caching, panels
+│   ├── SimpleDICOM.swift       # Pure-Swift DICOM parser
 │   ├── MultiPanelContainer.swift  # Panel grid, overlays, gesture handling
-│   ├── PanelState.swift       # Per-panel state (series, W/L, zoom, tools)
-│   ├── MPREngine.swift        # CPU multi-planar reconstruction
+│   ├── PanelState.swift        # Per-panel state (series, W/L, zoom, tools)
+│   ├── MPREngine.swift         # CPU multi-planar reconstruction
 │   ├── MetalVolumeRenderer.swift  # GPU MIP/MinIP via Metal compute
-│   ├── VolumeData.swift       # 3D voxel buffer
-│   └── ...                    # Overlays, toolbars, helpers
-└── DCMTKWrapper/              # Objective-C++ bridge to DCMTK/OpenJPEG
+│   ├── VolumeData.swift        # 3D voxel buffer
+│   └── ...                     # Overlays, toolbars, helpers
+├── OpenDicomViewerMacApp/      # Thin macOS executable shim (main.swift only)
+└── DCMTKWrapper/               # Objective-C++ bridge to DCMTK/OpenJPEG
     ├── DCMTKHelper.mm
     └── include/DCMTKHelper.h
 ```
+
+`OpenDicomViewer` (the library target above, despite the name) holds all the
+actual AppKit/UIKit-adjacent SwiftUI code; `OpenDicomViewerMacApp` is a
+one-file shim that just boots it on macOS, since a SwiftPM executable target
+can't produce an iOS app bundle. See `docs/iOS-Build.md` for the iOS side.
 
 For a full breakdown including what to edit for common tasks (adding tools, shortcuts, overlays), see the **Customization Guide** in the README.
 

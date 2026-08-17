@@ -10,11 +10,15 @@
 import SwiftUI
 import AppKit
 
-/// Invisible NSView added directly to the window's content view.
+/// NSView returned directly by WindowAccessor.makeNSView (see below for why).
 /// Overrides performKeyEquivalent which fires BEFORE the Input Method (Korean/Japanese/Chinese IME)
 /// processes the event. This is the only reliable way to handle single-letter shortcuts
 /// when a CJK input method is active.
-private class KeyInterceptorView: NSView {
+///
+/// Not marked `private`: it's used as WindowAccessor's inferred NSViewRepresentable
+/// `NSViewType` (the return type of makeNSView / parameter type of updateNSView),
+/// and WindowAccessor itself is `internal`, so this needs to be at least as visible.
+class KeyInterceptorView: NSView {
     weak var model: DICOMModel?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -72,35 +76,46 @@ private class KeyInterceptorView: NSView {
 struct WindowAccessor: NSViewRepresentable {
     let model: DICOMModel
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+    // The returned view IS the key interceptor (rather than a separate NSView
+    // manually appended to window.contentView's subviews after the fact).
+    // An earlier version created a plain NSView here and then reached out to
+    // `window.contentView?.addSubview(interceptor)` to insert the interceptor
+    // separately -- that triggers AppKit's runtime warning "Adding
+    // 'KeyInterceptorView' as a subview of NSHostingController.view is not
+    // supported and may result in a broken view hierarchy", because
+    // window.contentView in a SwiftUI-hosted window is SwiftUI's own
+    // NSHostingView, and inserting an extra subview into it directly conflicts
+    // with SwiftUI's management of that hierarchy -- in practice this could
+    // manifest as the window rendering with no visible content at all.
+    // Returning the interceptor itself from makeNSView keeps it fully inside
+    // the supported NSViewRepresentable path (SwiftUI embeds the returned view
+    // for us, correctly, since WindowAccessor is placed via `.background(...)`
+    // in ContentView.swift) while still getting a real NSView in the window's
+    // key view loop for performKeyEquivalent to fire on.
+    func makeNSView(context: Context) -> KeyInterceptorView {
+        let view = KeyInterceptorView()
+        view.model = model
         DispatchQueue.main.async {
             if let window = view.window {
                 window.titleVisibility = .hidden
                 window.titlebarAppearsTransparent = true
                 window.styleMask.insert(.fullSizeContentView)
 
-                // Hide Traffic Lights
+                // Hide Traffic Lights, but keep the zoom (green) button visible --
+                // with titleVisibility = .hidden there's no title bar region left to
+                // double-click for maximize/restore, so hiding all three buttons
+                // left no way to grow the window beyond its initial size at all.
                 window.standardWindowButton(.closeButton)?.isHidden = true
                 window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-                window.standardWindowButton(.zoomButton)?.isHidden = true
 
                 // Allow moving by dragging background
                 window.isMovableByWindowBackground = true
-
-                // Install key interceptor for IME-independent shortcuts
-                if let contentView = window.contentView {
-                    let interceptor = KeyInterceptorView()
-                    interceptor.model = model
-                    interceptor.frame = .zero
-                    interceptor.isHidden = false
-                    contentView.addSubview(interceptor)
-                }
             }
         }
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
+    func updateNSView(_ nsView: KeyInterceptorView, context: Context) {
+        nsView.model = model
     }
 }

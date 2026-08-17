@@ -146,9 +146,9 @@ class PanelState: ObservableObject, Identifiable {
     @Published var mipSlabThickness: Int = 10  // number of slices in the slab
 
     // Rendered Image
-    @Published var image: NSImage? = nil
+    @Published var image: PlatformImage? = nil
 
-    // Display dimensions (from NSImage.size, which may differ from raw pixel
+    // Display dimensions (from PlatformImage.size, which may differ from raw pixel
     // dimensions for MPR views with non-isotropic voxels)
     var displayImageWidth: CGFloat = 0
     var displayImageHeight: CGFloat = 0
@@ -156,7 +156,7 @@ class PanelState: ObservableObject, Identifiable {
     /// Set the display image and update display dimensions from its size.
     /// Use this instead of assigning `image` directly so that overlay
     /// coordinate transforms use the correct (aspect-ratio-corrected) size.
-    func setDisplayImage(_ img: NSImage) {
+    func setDisplayImage(_ img: PlatformImage) {
         image = img
         displayImageWidth = img.size.width
         displayImageHeight = img.size.height
@@ -257,8 +257,8 @@ class PanelState: ObservableObject, Identifiable {
 
     /// Internal frame counter updated every tick (not @Published, no SwiftUI cascade)
     var cineInternalFrame: Int = 0
-    /// Weak reference to the NSView for direct cine frame rendering (bypasses SwiftUI)
-    weak var cineDisplayView: NSView?
+    /// Weak reference to the platform view for direct cine frame rendering (bypasses SwiftUI)
+    weak var cineDisplayView: PlatformView?
 
     /// Reset panel to empty state
     func reset() {

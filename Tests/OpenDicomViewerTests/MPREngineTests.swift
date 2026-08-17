@@ -7,7 +7,7 @@
 
 import XCTest
 import simd
-@testable import OpenDicomViewer
+@testable import OpenDicomViewerCore
 
 final class MPREngineTests: XCTestCase {
 

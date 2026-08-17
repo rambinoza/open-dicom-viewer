@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import OpenDicomViewer
+@testable import OpenDicomViewerCore
 
 // MARK: - Window/Level Persistence Tests
 //

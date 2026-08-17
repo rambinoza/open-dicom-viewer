@@ -8,7 +8,7 @@
 // Licensed under the MIT License. See LICENSE for details.
 
 import XCTest
-@testable import OpenDicomViewer
+@testable import OpenDicomViewerCore
 
 final class PanelStateTests: XCTestCase {
 

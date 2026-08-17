@@ -4,14 +4,18 @@
 // CPU-based Multi-Planar Reconstruction (MPR) engine. Extracts oblique 2D
 // slices from a 3D VolumeData by sampling along orthogonal planes (sagittal,
 // coronal) using trilinear interpolation. Converts the sampled voxel values
-// to grayscale NSImage via window/level tone mapping.
+// to grayscale PlatformImage via window/level tone mapping.
 //
 // This is the fallback rendering path; GPU-accelerated rendering is handled
 // by MetalVolumeRenderer for MIP projections.
+//
+// Cross-platform (macOS + iOS) -- see PlatformCompat.swift for why
+// PlatformImageFactory.make replaces the old direct NSImage(cgImage:size:) call: UIImage has no
+// equivalent to NSImage's decoupled logical-size trick, which this file's non-isotropic-spacing
+// aspect correction depends on.
 // Licensed under the MIT License. See LICENSE for details.
 
 import Foundation
-import AppKit
 import simd
 import DCMTKWrapper
 
@@ -475,11 +479,11 @@ class MPREngine {
         )
     }
 
-    // MARK: - Rendering MPR to NSImage
+    // MARK: - Rendering MPR to PlatformImage
 
     /// Render an MPR slice to a displayable image with Window/Level
-    /// The NSImage size reflects physical dimensions (mm) so non-isotropic pixels display correctly
-    static func renderSlice(_ slice: MPRSlice, ww: Double, wc: Double, invert: Bool = false) -> NSImage? {
+    /// The image's display size reflects physical dimensions (mm) so non-isotropic pixels display correctly
+    static func renderSlice(_ slice: MPRSlice, ww: Double, wc: Double, invert: Bool = false) -> PlatformImage? {
         let totalPixels = slice.width * slice.height
         guard totalPixels > 0, ww > 0 else { return nil }
 
@@ -513,7 +517,7 @@ class MPREngine {
 
         guard let cgImage = context.makeImage() else { return nil }
 
-        // Scale NSImage size to reflect physical dimensions so non-isotropic
+        // Scale the display size to reflect physical dimensions so non-isotropic
         // pixels (e.g., sagittal/coronal with thick slices) display correctly.
         // Use the ratio of spacingY/spacingX to determine the aspect correction.
         let physicalWidth = Double(slice.width) * slice.pixelSpacingX
@@ -524,7 +528,7 @@ class MPREngine {
         let displayWidth = CGFloat(slice.width)
         let displayHeight = CGFloat(Double(slice.width) * aspectRatio)
 
-        return NSImage(cgImage: cgImage, size: NSSize(width: displayWidth, height: displayHeight))
+        return PlatformImageFactory.make(cgImage: cgImage, displaySize: CGSize(width: displayWidth, height: displayHeight))
     }
 }
 

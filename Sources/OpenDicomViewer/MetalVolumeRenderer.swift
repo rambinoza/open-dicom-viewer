@@ -18,7 +18,11 @@
 import Foundation
 import Metal
 import MetalKit
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import SwiftUI
 import simd
 
@@ -108,7 +112,7 @@ final class MetalVolumeRenderer {
 
     // MARK: - Rendering
 
-    /// Render a MIP/MinIP/Average projection and return as NSImage
+    /// Render a MIP/MinIP/Average projection and return as a PlatformImage
     func renderProjection(
         volume: VolumeData,
         mode: ProjectionMode,
@@ -122,7 +126,7 @@ final class MetalVolumeRenderer {
         invert: Bool = false,
         thresholdMin: Float = -Float.greatestFiniteMagnitude,
         thresholdMax: Float = Float.greatestFiniteMagnitude
-    ) -> NSImage? {
+    ) -> PlatformImage? {
         uploadVolume(volume)
         guard let volumeTex = volumeTexture, let pipeline = mipPipeline else { return nil }
 
@@ -185,7 +189,7 @@ final class MetalVolumeRenderer {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
-        return textureToNSImage(outputTex, width: outputWidth, height: outputHeight)
+        return textureToPlatformImage(outputTex, width: outputWidth, height: outputHeight)
     }
 
     // MARK: - Helpers
@@ -198,7 +202,7 @@ final class MetalVolumeRenderer {
         }
     }
 
-    private func textureToNSImage(_ texture: MTLTexture, width: Int, height: Int) -> NSImage? {
+    private func textureToPlatformImage(_ texture: MTLTexture, width: Int, height: Int) -> PlatformImage? {
         let bytesPerRow = width * 4
         var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
 
@@ -221,7 +225,7 @@ final class MetalVolumeRenderer {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ), let cgImage = context.makeImage() else { return nil }
 
-        return NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
+        return PlatformImageFactory.make(cgImage: cgImage, displaySize: CGSize(width: width, height: height))
     }
 }
 
@@ -393,6 +397,7 @@ extension MetalVolumeRenderer {
 
 // MARK: - Volume Render View (MTKView wrapper for SwiftUI)
 
+#if os(macOS)
 /// SwiftUI wrapper for an MTKView that displays GPU-rendered volume projections
 struct VolumeRenderView: NSViewRepresentable {
     @ObservedObject var model: DICOMModel
@@ -413,3 +418,28 @@ struct VolumeRenderView: NSViewRepresentable {
         // The MTKView here is a placeholder for future interactive Metal rendering
     }
 }
+#else
+/// iOS counterpart of VolumeRenderView, wrapping MTKView via UIViewRepresentable instead of
+/// NSViewRepresentable. MTKView itself (MetalKit) is cross-platform; only the SwiftUI
+/// representable protocol differs. Mirrors the macOS placeholder above -- actual interactive
+/// rendering wiring is planned as part of the touch-native iOS interaction layer.
+struct VolumeRenderView: UIViewRepresentable {
+    @ObservedObject var model: DICOMModel
+    @ObservedObject var panel: PanelState
+    let renderer: MetalVolumeRenderer
+
+    func makeUIView(context: Context) -> MTKView {
+        let mtkView = MTKView(frame: .zero, device: renderer.device)
+        mtkView.isPaused = true
+        mtkView.enableSetNeedsDisplay = true
+        mtkView.colorPixelFormat = .bgra8Unorm
+        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        return mtkView
+    }
+
+    func updateUIView(_ uiView: MTKView, context: Context) {
+        // Rendering is triggered externally and the result is set on panel.image
+        // The MTKView here is a placeholder for future interactive Metal rendering
+    }
+}
+#endif

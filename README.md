@@ -153,8 +153,9 @@ Pre-built static libraries for DCMTK and OpenJPEG are included in `libs/`. To re
 
 ```
 Sources/
-├── OpenDicomViewer/          # Main application target
-│   ├── App.swift                 # App entry point, menu bar commands
+├── OpenDicomViewer/          # OpenDicomViewerCore library target (shared by every platform)
+│   ├── OpenDicomViewerCoreApp.swift  # Shared SwiftUI App scene, menu bar commands
+│   ├── PlatformCompat.swift      # Cross-platform (macOS/iOS) image/type aliases
 │   ├── ContentView.swift         # Root view: sidebar + detail split
 │   ├── DICOMModel.swift          # Core model: loading, caching, panel management
 │   ├── SimpleDICOM.swift         # Pure-Swift DICOM parser (no DCMTK dependency)
@@ -169,12 +170,21 @@ Sources/
 │   ├── HelpView.swift            # In-app help viewer
 │   ├── TagView.swift             # DICOM tag list view
 │   ├── Extensions.swift          # Collection safe-subscript helper
-│   └── WindowAccessor.swift      # NSWindow customization (hidden titlebar)
+│   └── WindowAccessor.swift      # NSWindow customization (hidden titlebar; macOS)
+├── OpenDicomViewerMacApp/    # Thin macOS executable shim
+│   └── main.swift                # Calls OpenDicomViewerCoreApp.main()
 └── DCMTKWrapper/             # Objective-C++ bridge to DCMTK
     ├── DCMTKHelper.mm            # DCMTK image decoding + JPEG2000 fallback
     └── include/
         └── DCMTKHelper.h         # Public C/ObjC interface
 ```
+
+A SwiftPM `.executableTarget` can't produce an installable iOS app bundle, so
+the app is split into the `OpenDicomViewerCore` library target above (all the
+actual UI/logic, cross-platform) plus a tiny per-platform executable/app
+target. `OpenDicomViewerMacApp` is that shim for macOS; see
+[`docs/iOS-Build.md`](docs/iOS-Build.md) for how an iOS Xcode App target wires
+up to the same `OpenDicomViewerCore` product.
 
 ### Key Design Decisions
 
@@ -193,7 +203,7 @@ OpenDicomViewer is designed to be straightforward to customize — whether you'r
 | **Add a keyboard shortcut** | Add an `.onKeyPress` handler in `ContentView.swift` |
 | **Modify overlays** | Edit `AnnotationOverlay` or `InfoOverlay` in `MultiPanelContainer.swift` |
 | **Change panel behavior** | Per-panel state lives in `PanelState.swift`; cross-panel coordination is in `DICOMModel.swift` |
-| **Add a menu bar command** | Add commands in `App.swift` |
+| **Add a menu bar command** | Add commands in `OpenDicomViewerCoreApp.swift` |
 | **Modify cross-reference lines** | Edit `CrossReferenceOverlay.swift` |
 
 The codebase uses clear naming conventions and minimal abstraction layers, making it well-suited for AI-assisted development. Fork the project, describe what you want to change, and point your AI assistant at the relevant files above.

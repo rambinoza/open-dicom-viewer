@@ -8,7 +8,6 @@
 // Licensed under the MIT License. See LICENSE for details.
 
 import Foundation
-import AppKit
 import ImageIO
 
 func cineLog(_ msg: String) {
@@ -41,7 +40,7 @@ class MultiFrameDecoder {
     private var frameTable: [(offset: Int, length: Int)] = []
     private let isEncapsulated: Bool
     private let isSigned: Bool
-    private let frameCache = NSCache<NSNumber, NSImage>()
+    private let frameCache = NSCache<NSNumber, PlatformImage>()
     private let prefetchQueue = DispatchQueue(label: "com.opendicomviewer.framePrefetch", qos: .userInitiated)
 
     // Decode-ahead ring buffer for smooth cine playback
@@ -168,7 +167,7 @@ class MultiFrameDecoder {
     // MARK: - Frame Access
 
     /// Return a decoded frame image at the given index. Checks the cache first.
-    func frameImage(at index: Int) -> NSImage? {
+    func frameImage(at index: Int) -> PlatformImage? {
         guard index >= 0 && index < min(numberOfFrames, frameTable.count) else { return nil }
 
         let key = NSNumber(value: index)
@@ -179,11 +178,11 @@ class MultiFrameDecoder {
         let entry = frameTable[index]
         guard entry.offset >= 0 && entry.offset + entry.length <= mappedData.count else { return nil }
 
-        let image: NSImage?
+        let image: PlatformImage?
         if isEncapsulated {
             // Zero-copy slice into memory-mapped data — JPEG/compressed
             let frameData = mappedData[entry.offset..<(entry.offset + entry.length)]
-            image = NSImage(data: frameData)
+            image = PlatformImage(data: frameData)
         } else {
             let frameData = mappedData[entry.offset..<(entry.offset + entry.length)]
             image = renderRawFrame(frameData)
@@ -194,7 +193,7 @@ class MultiFrameDecoder {
         return image
     }
 
-    /// Decode a frame directly to CGImage (faster than NSImage for display pipeline)
+    /// Decode a frame directly to CGImage (faster than PlatformImage for display pipeline)
     func frameCGImage(at index: Int) -> CGImage? {
         guard index >= 0 && index < min(numberOfFrames, frameTable.count) else { return nil }
 
@@ -372,8 +371,8 @@ class MultiFrameDecoder {
         }
     }
 
-    /// Render raw (uncompressed) pixel bytes to an NSImage using auto window/level.
-    private func renderRawFrame(_ frameData: Data) -> NSImage? {
+    /// Render raw (uncompressed) pixel bytes to a PlatformImage using auto window/level.
+    private func renderRawFrame(_ frameData: Data) -> PlatformImage? {
         guard frameWidth > 0, frameHeight > 0 else { return nil }
 
         let totalPixels = frameWidth * frameHeight
@@ -393,7 +392,7 @@ class MultiFrameDecoder {
                 provider: provider, decode: nil,
                 shouldInterpolate: true, intent: .defaultIntent
             ) else { return nil }
-            return NSImage(cgImage: cgImg, size: NSSize(width: frameWidth, height: frameHeight))
+            return PlatformImageFactory.make(cgImage: cgImg, displaySize: CGSize(width: frameWidth, height: frameHeight))
         }
 
         // Grayscale path — compute auto window/level from this frame's pixels
@@ -448,7 +447,7 @@ class MultiFrameDecoder {
         }
 
         guard let cgImage = context.makeImage() else { return nil }
-        return NSImage(cgImage: cgImage, size: NSSize(width: frameWidth, height: frameHeight))
+        return PlatformImageFactory.make(cgImage: cgImage, displaySize: CGSize(width: frameWidth, height: frameHeight))
     }
 
     /// Compute pixel min/max for auto window/level on a raw frame.

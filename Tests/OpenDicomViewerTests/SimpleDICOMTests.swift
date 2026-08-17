@@ -9,7 +9,7 @@
 import XCTest
 import CoreGraphics
 import simd
-@testable import OpenDicomViewer
+@testable import OpenDicomViewerCore
 
 final class SimpleDICOMTests: XCTestCase {
 

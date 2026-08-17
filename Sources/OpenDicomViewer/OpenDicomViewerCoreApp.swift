@@ -1,19 +1,35 @@
-// App.swift
-// OpenDicomViewer
+// OpenDicomViewerCoreApp.swift
+// OpenDicomViewerCore
 //
-// Application entry point. Configures the main window with a hidden titlebar
+// Shared SwiftUI App scene. Configures the main window with a hidden titlebar
 // and registers menu bar commands for layout switching, view operations
 // (window/level, transforms, overlays), MPR mode, and synchronized scrolling.
+//
+// This type lives in the OpenDicomViewerCore library target (shared by macOS
+// and, eventually, iOS) rather than in a platform executable target, because a
+// bare SwiftPM `.executableTarget` cannot produce an installable iOS app
+// bundle -- only a real Xcode "App" target can. So each platform gets a thin
+// executable shim with its own `@main` entry point that forwards to this
+// type's `body`. See Sources/OpenDicomViewerMacApp/main.swift for the macOS
+// shim, and docs/iOS-Build.md for how the iOS Xcode target should wire up to
+// this package's `OpenDicomViewerCore` library product.
+//
+// `@main` was intentionally removed from this type -- it has no effect inside
+// a library target (SwiftPM only looks for `@main` within the files of the
+// executable target actually being built), and was previously only doing
+// anything because this file lived directly inside the (now-split) executable
+// target.
 // Licensed under the MIT License. See LICENSE for details.
 
 import SwiftUI
 
-@main
-struct OpenDicomViewerApp: App {
+public struct OpenDicomViewerCoreApp: App {
     @StateObject private var model = DICOMModel()
     @StateObject private var updateChecker = UpdateChecker()
 
-    var body: some Scene {
+    public init() {}
+
+    public var body: some Scene {
         WindowGroup {
             ContentView(model: model)
                 .task {
@@ -37,7 +53,11 @@ struct OpenDicomViewerApp: App {
                     Text(updateAlertMessage)
                 }
         }
+        // `.hiddenTitleBar` (WindowStyle) only exists on macOS; there's no
+        // titlebar concept to hide on iOS, so this whole modifier is gated.
+        #if os(macOS)
         .windowStyle(.hiddenTitleBar)
+        #endif
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...") {
@@ -45,12 +65,18 @@ struct OpenDicomViewerApp: App {
                 }
             }
 
+            // `model.openFolder()` (NSOpenPanel) only exists on macOS -- see
+            // DICOMModel.swift. The iOS entry point should offer its own
+            // "Open" affordance from the view layer (`.fileImporter`) as part
+            // of the touch-native iOS interaction layer work.
+            #if os(macOS)
             CommandGroup(replacing: .newItem) {
                 Button("Open...") {
                     model.openFolder()
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
+            #endif
 
             CommandGroup(after: .toolbar) {
                 // ─ Window/Level ─

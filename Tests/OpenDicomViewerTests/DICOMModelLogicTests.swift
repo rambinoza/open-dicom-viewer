@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import simd
-@testable import OpenDicomViewer
+@testable import OpenDicomViewerCore
 
 private func imageContext(
     orientation: [Double],
