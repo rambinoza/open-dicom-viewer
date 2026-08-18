@@ -1643,16 +1643,12 @@ struct PanelThumbnailPopup: View {
                 .cornerRadius(4)
 
             if let img = model.getCachedImageForPanel(panel, at: index) {
-                // Image(nsImage:)/Image(uiImage:) are AppKit/UIKit-specific SwiftUI Image
-                // initializers -- PlatformImage itself is cross-platform (PlatformCompat.swift)
-                // but SwiftUI's Image type has no single init that accepts it directly.
-                #if os(macOS)
-                Image(nsImage: img)
+                // platformImage(_:) (PlatformCompat.swift) hides the fact that Image(nsImage:)/
+                // Image(uiImage:) are separate, platform-specific SwiftUI Image initializers --
+                // see that helper's doc comment for why the modifier chain below must not be
+                // split across an inline #if/#else/#endif itself.
+                platformImage(img)
                     .resizable()
-                #else
-                Image(uiImage: img)
-                    .resizable()
-                #endif
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 80, height: 80)
                     .background(Color.black)

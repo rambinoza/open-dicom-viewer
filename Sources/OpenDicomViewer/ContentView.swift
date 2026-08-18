@@ -455,15 +455,12 @@ struct SeriesRow: View {
         HStack {
             Group {
                 if let thumb = model.seriesThumbnails[series.id] {
-                    // Image(nsImage:)/Image(uiImage:) are AppKit/UIKit-specific SwiftUI Image
-                    // initializers; PlatformImage (PlatformCompat.swift) itself is cross-platform.
-                    #if os(macOS)
-                    Image(nsImage: thumb)
+                    // platformImage(_:) (PlatformCompat.swift) hides the fact that Image(nsImage:)/
+                    // Image(uiImage:) are separate, platform-specific SwiftUI Image initializers --
+                    // see that helper's doc comment for why the modifier chain below must not be
+                    // split across an inline #if/#else/#endif itself.
+                    platformImage(thumb)
                         .resizable()
-                    #else
-                    Image(uiImage: thumb)
-                        .resizable()
-                    #endif
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 40, height: 40)
                         .cornerRadius(4)

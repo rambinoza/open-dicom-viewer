@@ -27,6 +27,7 @@
 
 import Foundation
 import CoreGraphics
+import SwiftUI
 
 #if os(macOS)
 import AppKit
@@ -41,6 +42,28 @@ public typealias PlatformColor = UIColor
 public typealias PlatformFont = UIFont
 public typealias PlatformView = UIView
 #endif
+
+/// Wraps a `PlatformImage` (NSImage/UIImage) in SwiftUI's `Image`, hiding the fact that
+/// `Image(nsImage:)`/`Image(uiImage:)` are separate, platform-specific initializers.
+///
+/// NOTE (iOS port): call sites used to spell this inline as
+/// `#if os(macOS) Image(nsImage: x).resizable() #else Image(uiImage: x).resizable() #endif`
+/// followed by further chained modifiers (`.aspectRatio(...)`, `.frame(...)`, ...) *after* the
+/// `#endif`. That pattern fails to compile: once each `#if`/`#else` branch already contains its
+/// own chained call (`.resizable()`), the compiler cannot unify the branches back into a single
+/// postfix-expression chain for the modifiers that follow `#endif`, and erases the result to the
+/// bare `View` existential -- which then can't use protocol-extension members like
+/// `aspectRatio(contentMode:)` that return `some View` (error: "instance member 'aspectRatio'
+/// cannot be used on type 'View'"). Routing the *construction* of the plain `Image` through this
+/// single-expression helper (no chained calls, no #if inside the helper's call sites) keeps every
+/// call site's modifier chain unconditional and unbroken.
+public func platformImage(_ image: PlatformImage) -> Image {
+    #if os(macOS)
+    return Image(nsImage: image)
+    #else
+    return Image(uiImage: image)
+    #endif
+}
 
 public enum PlatformImageFactory {
     /// Wraps `cgImage` for display at `displaySize` (in points/logical units, which may differ
