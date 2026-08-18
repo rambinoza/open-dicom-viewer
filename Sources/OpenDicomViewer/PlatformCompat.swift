@@ -170,4 +170,24 @@ public enum PlatformImageFactory {
         ) else { return nil }
         return make(cgImage: cgImage, displaySize: CGSize(width: width, height: height))
     }
+
+    /// Encodes `image` as PNG data -- added for the "screen save" share/export feature
+    /// (ShareMenuButton.swift). `NSImage`/`UIImage` have no shared PNG-encoding API (unlike the
+    /// `Image(nsImage:)`/`Image(uiImage:)` display-side split this file already works around
+    /// elsewhere), so this goes through each platform's own bitmap representation type.
+    /// NOTE: this exports the panel's already-rendered display image (window/level baked in by
+    /// the renderer, orientation/flip/rotation already applied via the CATransform3D on the
+    /// image view) but does NOT include annotation overlays (rulers/angles/ROIs, which are drawn
+    /// as separate CALayers on top rather than baked into the pixel data) -- a true
+    /// what-you-see-is-what-you-get screen capture including overlays is a documented follow-up,
+    /// not implemented here.
+    public static func pngData(from image: PlatformImage) -> Data? {
+        #if os(macOS)
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+        #else
+        return image.pngData()
+        #endif
+    }
 }

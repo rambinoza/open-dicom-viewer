@@ -2254,6 +2254,15 @@ struct ToolPalette: View {
                 model.fitToWindowForPanel(model.activePanel)
             }
             #endif
+
+            // PACS send / share / screen-save export for the active panel's series/image (added
+            // for the "database, browse, delete, import, send DICOM/email study/image/series/
+            // screen save" feature set). Unconditional on both platforms -- there's no keyboard
+            // shortcut equivalent for this on macOS the way reset/invert/flip/rotate have, so
+            // it needs an on-screen affordance everywhere, unlike the iOS-only row above.
+            // See ShareMenuButton.swift.
+            Divider().padding(.vertical, 2)
+            PanelShareMenu(model: model)
         }
         .padding(4)
         .background(.ultraThinMaterial)

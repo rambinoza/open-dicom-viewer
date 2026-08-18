@@ -34,7 +34,13 @@ let package = Package(
         .library(name: "OpenDicomViewerCore", targets: ["OpenDicomViewerCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0")
+        .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0"),
+        // Study library import/export (LibraryView.swift / StudyImportService.swift): reading
+        // "upload from ... zip" archives and zipping a study/series back up for the Share/Email
+        // sheet. Exact package URL + product name + API signatures verified against the real
+        // README and FileManager+ZIP.swift source before being used (not from memory) -- see
+        // StudyImportService.swift's header comment.
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.0")
     ],
     targets: [
         // XCFrameworks cross-compiled for iOS device + Simulator (arm64) by
@@ -163,8 +169,17 @@ let package = Package(
         // App target via the OpenDicomViewerCore product.
         .target(
             name: "OpenDicomViewerCore",
-            dependencies: ["DCMTKWrapper"],
-            path: "Sources/OpenDicomViewer"
+            dependencies: [
+                "DCMTKWrapper",
+                .product(name: "ZIPFoundation", package: "ZIPFoundation")
+            ],
+            path: "Sources/OpenDicomViewer",
+            // StudyDatabase.swift uses Apple's system libsqlite3 directly via `import SQLite3`
+            // (no third-party wrapper) -- this links it in. Available on both macOS and iOS SDKs,
+            // so left unconditional like the existing "z" (zlib) entry on DCMTKWrapper above.
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
         ),
         // Thin macOS-only executable shim: a single main.swift that forwards
         // to OpenDicomViewerCoreApp.main(). Kept as its own target/product

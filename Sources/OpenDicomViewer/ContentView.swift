@@ -242,6 +242,10 @@ struct SidebarView: View {
     // SwiftUI sheet -- unlike the file-importer above, PACSBrowserView has no AppKit/UIKit
     // dependency at all, so this needs no #if os(...) gating on either platform.
     @State private var showingPACSBrowser = false
+    // Study library (LibraryView.swift / StudyDatabase.swift / StudyImportService.swift):
+    // browse/import/delete/send/share studies. Same plain, unconditional-sheet pattern as
+    // showingPACSBrowser above -- LibraryView has no AppKit/UIKit dependency either.
+    @State private var showingLibrary = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -264,6 +268,14 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .help("PACS Query/Retrieve")
+
+                Button(action: { showingLibrary = true }) {
+                    Image(systemName: "tray.full")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Study Library")
 
                 Button(action: openFile) {
                     HStack(spacing: 6) {
@@ -301,6 +313,9 @@ struct SidebarView: View {
         #endif
         .sheet(isPresented: $showingPACSBrowser) {
             PACSBrowserView(model: model)
+        }
+        .sheet(isPresented: $showingLibrary) {
+            LibraryView(model: model)
         }
     }
 

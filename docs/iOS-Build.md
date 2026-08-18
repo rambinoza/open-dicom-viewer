@@ -440,3 +440,127 @@ Not implemented (explicit follow-ups, not silently missing):
   node today.
 - Query levels other than STUDY (no PATIENT/SERIES/IMAGE-level C-FIND, no
   drill-down from a study into its series before retrieving).
+
+## 7. Study library: browse / delete / import / send / share
+
+**Status: implemented, not compiler-verified -- same caveat as every other
+`.swift` file in this port; no Swift toolchain has ever been available in
+this sandbox.**
+
+Adds a local database of studies plus UI to browse, delete, import from a
+folder or ZIP archive, and send or share a study/series/image/screen-save.
+Six files, two new UI surfaces:
+
+- **`Sources/OpenDicomViewer/StudyDatabase.swift`** -- a `StudyRecord`
+  struct (patient/study summary fields + a Documents-*relative* `folderPath`,
+  never an absolute path, since the sandbox container's absolute path isn't
+  guaranteed stable across relaunches) and a `StudyDatabase` singleton
+  wrapping Apple's system `libsqlite3` directly via `import SQLite3` (no
+  third-party wrapper, no Core Data -- Core Data would need a hand-authored
+  `.xcdatamodeld`, normally built with Xcode's visual editor and brittle to
+  write blind). One table, `upsert`/`allStudies`/`delete`, all calls
+  serialized onto a private `DispatchQueue` since this is read from both the
+  main actor (`LibraryView`) and background import/PACS-retrieve code.
+- **`Sources/OpenDicomViewer/StudyImportService.swift`** -- the import
+  pipeline. **Design decision worth knowing:** importing a folder or ZIP
+  always *copies*/*extracts* into this app's own
+  `Documents/ImportedStudies/<uuid>/` first, and only registers that managed
+  copy in the database -- never the original externally-picked location.
+  An externally-picked URL (from `.fileImporter`, security-scoped) is only
+  guaranteed valid for that one picker session, but a "browse your library
+  any time" screen needs paths that stay valid indefinitely across app
+  relaunches. This roughly doubles disk usage versus the source while it
+  still exists elsewhere -- an accepted tradeoff. The pre-existing
+  `SidebarView` "Open" button is unaffected and still just views a folder in
+  place without copying or registering it. ZIP extraction/creation uses the
+  new `ZIPFoundation` SPM dependency (`.package(url:
+  "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.0")`, added to
+  `Package.swift`'s `dependencies:` and to `OpenDicomViewerCore`'s target
+  dependencies) -- its exact API (`FileManager.unzipItem`/`zipItem`
+  signatures) was fetched and confirmed against the real published
+  documentation before use, not recalled from memory. Also reads
+  PatientName/StudyDate/StudyDescription/AccessionNumber/Modality from the
+  first parsable file in an imported folder for the database summary row --
+  no existing code in this codebase read those tags before now (the
+  pre-existing `SimpleDicomParser` in `SimpleDICOM.swift` is the only
+  tag-reading tool in the app; `DICOMModel`'s own private tag-reading only
+  covers what it needs for series/geometry, not these patient/study fields).
+  A folder containing more than one study's worth of files registers only
+  the *first* study found as one database row (documented simplification,
+  not a bug -- the folder still opens correctly and shows every study's
+  images when opened directly).
+- **`Sources/OpenDicomViewer/ShareMenuButton.swift`** -- `PrepareAndShareButton`,
+  a small reusable two-phase component (tap to prepare a file in the
+  background -- zip a folder, encode a PNG -- then a real SwiftUI `ShareLink`
+  appears in its place to tap again). `ShareLink` has no imperative
+  "trigger from code" API, so this two-tap shape is the straightforward way
+  to combine it with any preparation step that takes real time, which every
+  use in this app does. Also defines `PanelShareMenu`, a new toolbar menu
+  (see below) for the viewer's active panel.
+- **`Sources/OpenDicomViewer/LibraryView.swift`** -- the study-level browse
+  sheet: list of studies (patient name, date, description, modality badges,
+  local-vs-PACS-retrieved badge, instance count), tap to open, swipe or
+  context menu to delete, toolbar buttons to import a folder or ZIP
+  (`.fileImporter`, used unconditionally on *both* platforms here -- it's
+  available on macOS 13+ too, not iOS-only; the existing iOS-only
+  `.fileImporter` gating elsewhere in `ContentView.swift` was only because
+  macOS already had `NSOpenPanel` for that specific case, not because
+  `.fileImporter` itself needs it), and a context menu per study for "Send
+  to PACS" (reuses `PACSService`/the one saved `PACSSettingsStore` node,
+  same as PACS retrieve) and "Share / Email" (zips the whole study folder,
+  hands it to `PrepareAndShareButton`).
+- **`Sources/OpenDicomViewer/MultiPanelContainer.swift`** -- `ToolPalette`
+  gained an unconditional (both platforms, no `#if os(...)`) `PanelShareMenu`
+  button, since unlike the existing iOS-only reset/invert/flip/rotate row
+  above it (added only because macOS already has keyboard shortcuts for
+  those), there's no macOS keyboard equivalent for "send/share the currently
+  displayed image or series." `PanelShareMenu` offers, for whatever's
+  currently shown in the active panel: send current series / send current
+  image to PACS; share current series (zipped) / share current image /
+  share a "screen save". **Screen save is a plain PNG export of the panel's
+  currently displayed pixel data only -- it does NOT burn in any annotation
+  overlay** (measurements, text, etc. drawn on top in the viewer); that's a
+  known, explicit follow-up, not silently missing. PNG encoding is via a new
+  `PlatformImageFactory.pngData(from:)` in `PlatformCompat.swift`
+  (`NSBitmapImageRep` on macOS, `UIImage.pngData()` on iOS).
+- **`Sources/OpenDicomViewer/ContentView.swift`** -- `SidebarView` gained a
+  toolbar button (`tray.full` icon) opening `LibraryView` as a sheet,
+  unconditionally on both platforms, following the exact same pattern as the
+  existing PACS button.
+- **`Package.swift`** -- added the `ZIPFoundation` dependency (above) and
+  `.linkedLibrary("sqlite3")` to `OpenDicomViewerCore`'s `linkerSettings`
+  (that target previously had none). Both are system/SPM dependencies
+  available on macOS and iOS alike, so neither needed platform conditioning.
+
+**Two things worth flagging against the original request, which asked for
+this "all in one":**
+1. **Two UI surfaces, not one.** `LibraryView` (the database-backed browse
+   screen) only operates at *study* granularity -- there's no per-series or
+   per-image drill-down *within* the library itself, only whole-study
+   rows. Series- and image-level send/share (plus the screen-save export)
+   live instead in the *viewer's* toolbar, via the new `PanelShareMenu`,
+   operating on whatever the active panel currently has open. Splitting it
+   this way avoided inventing a second, parallel series/image browsing UI
+   inside `LibraryView` when the viewer already has one.
+2. **"Email" is implemented via the system share sheet (`ShareLink`), not a
+   Mail-specific API.** `ShareLink` presents the OS share sheet, which
+   includes Mail as one option among many (Messages, AirDrop, Save to
+   Files, third-party apps, etc.) rather than composing a mail message
+   directly via `MessageUI`/`MFMailComposeViewController`. This is more
+   general (works even if the device has no Mail account configured, lets
+   the user pick whatever app they actually want) but means there's no
+   pre-filled subject/body/recipient the way a dedicated Mail compose sheet
+   could offer -- a possible future enhancement if that's wanted
+   specifically.
+
+Not implemented (explicit follow-ups, not silently missing):
+- Per-series/per-image rows inside `LibraryView` itself (see above).
+- Annotation burn-in for screen-save PNG exports (see above).
+- A picker for *which* PACS node to send to -- reuses the single saved
+  `PACSSettingsStore` node, same limitation already noted in section 6.
+- Dedicated Mail-compose integration (see "email" note above).
+- Cleanup of the temporary ZIP/PNG files `PrepareAndShareButton` and
+  `StudyImportService.zipForSharing` create -- there's no single reliable
+  "share sheet finished" callback on either platform, so these are left as
+  plain OS temp files for the system to reclaim, not deleted immediately
+  after a successful share.
