@@ -39,8 +39,14 @@
 // OpenJPEG for JPEG2000 fallback (no dcmjp2k in DCMTK 3.6.8)
 #include "openjpeg.h"
 
+// NOTE: ensureDCMTKInitialized() used to be `static` (private to this file). It's now declared
+// in DCMTKSharedInit.h and defined below with external linkage, since PACSHelper.mm (added for
+// PACS networking) needs the exact same one-time DCMDICTPATH/codec-registration setup before any
+// DCMTK API call from that file too -- see DCMTKSharedInit.h for the full rationale.
+#import "DCMTKSharedInit.h"
+
 // Shared initialization — must run before ANY DCMTK usage from either class
-static void ensureDCMTKInitialized(void) {
+void ensureDCMTKInitialized(void) {
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
     // Set DCMDICTPATH to the bundled dicom.dic

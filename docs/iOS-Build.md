@@ -272,17 +272,23 @@ script for why.)
 `libs/xcframeworks/` now contains every library `Package.swift`'s
 `DCMTKWrapper` target needs (`dcmdata`, `dcmimage`, `dcmimgle`, `dcmjpeg`,
 `dcmjpls`, `dcmtkcharls`, `ijg8`, `ijg12`, `ijg16`, `oficonv`, `oflog`,
-`ofstd`, `openjp2`), plus `dcmnet`/`dcmqrdb`/`dcmtls` for the future PACS
-networking task. This took several rounds of real-build-output-driven fixes
-beyond what the risk areas below anticipated -- see the NOTE comments
-throughout `scripts/setup_native_deps_ios.sh` for the full, specific list
-(each `-D<VAR>=<value>` cache seed and source patch documents exactly what
-it fixes and why) if a similar issue resurfaces, e.g. when adding `dcmnet`
-to the actual link list for the PACS networking task.
+`ofstd`, `openjp2`), plus `dcmnet` (now actually linked -- see section 6
+below for the PACS networking task built on top of it) and `dcmqrdb`/
+`dcmtls` (cross-compiled but deliberately left unused -- see section 6 for
+why). This took several rounds of real-build-output-driven fixes beyond what
+the risk areas below anticipated -- see the NOTE comments throughout
+`scripts/setup_native_deps_ios.sh` for the full, specific list (each
+`-D<VAR>=<value>` cache seed and source patch documents exactly what it
+fixes and why) if a similar issue resurfaces.
 
 Original anticipated risk areas, kept for reference (all of #1 and #3 did in
-fact bite, in the specific forms documented in the script; #2 hasn't been
-investigated yet since `dcmnet` isn't linked by anything yet):
+fact bite, in the specific forms documented in the script; #2 remains
+unconfirmed -- section 6's PACS networking code compiled cleanly against
+`dcmnet`'s headers, which says nothing about whatever Darwin/POSIX socket
+code lives inside the already-built `libdcmnet.a` itself. That can only
+really be confirmed by a real C-ECHO succeeding against a real PACS from a
+real iOS device/Simulator -- flagged as the first thing to try once an Xcode
+iOS App target exists, not assumed fine):
 
 1. **DCMTK's own CMake config didn't fully support iOS cross-compilation out
    of the box**, even with ios-cmake handling the toolchain mechanics. This
@@ -313,3 +319,124 @@ real Xcode iOS App target exists to consume it -- and even then,
 `DCMTKWrapper` still won't compile for iOS until the AppKit-only code in
 `DCMTKHelper.mm` (see the "Known blockers" list above) is fixed, independent
 of these XCFrameworks now existing and being correctly wired in.
+
+## 6. PACS networking (C-ECHO / C-FIND / C-GET / C-STORE)
+
+**Status: implemented, partially verified -- see the verification breakdown
+below, which is more granular than for any other piece of this port so far.**
+
+`dcmnet` is now wired into `Package.swift` (`DcmnetXCFramework` binaryTarget
+for iOS, `.linkedLibrary("dcmnet", ...)` for macOS) alongside a new
+three-file implementation:
+
+- **`Sources/DCMTKWrapper/include/pacs_core.hpp` +
+  `Sources/DCMTKWrapper/pacs_core.cpp`** -- the actual DCMTK `dcmnet` API
+  usage (a `DcmSCU` subclass plus free functions for echo/find/retrieve/
+  store), deliberately written as **pure C++ with zero Foundation/Objective-C
+  dependency**, specifically so it could be checked with a real compiler.
+  This sandbox turned out to already have a full macOS arm64 DCMTK 3.6.8
+  build on disk (headers *and* `.a` libraries, at `libs/dcmtk/` -- built by
+  an earlier `scripts/setup_native_deps.sh` run, `.gitignore`'d like the
+  rest of `libs/`) -- Linux can't *link* a macOS Mach-O binary, but
+  `clang++ -std=c++17 -fsyntax-only -Wall -Wextra` against those real headers
+  doesn't need to link, and does fully type-check every DCMTK class, method,
+  enum, and constant name this file uses against their real declarations.
+  That check passed with zero errors or warnings. This is a meaningfully
+  stronger verification bar than anything else added in this port (including
+  the touch-interaction layer and the file picker) -- but it still only
+  proves *API usage matches real signatures*, not runtime correctness against
+  an actual PACS server, which no amount of static checking can substitute
+  for. See `pacs_core.hpp`'s header comment for the full design writeup,
+  including two decisions worth knowing about before testing against a real
+  PACS:
+  - **C-GET instead of C-MOVE for retrieval.** C-MOVE requires the client to
+    run its own permanently-listening Storage SCP for the PACS to connect
+    back to (bad fit for a mobile/NAT'd/backgrounded app); C-GET streams
+    retrieved instances back as C-STORE sub-operations on the *same*
+    already-open association, needing no listener at all. The tradeoff: a
+    small minority of older/stricter PACS only implement C-MOVE. Not
+    implemented as a fallback here -- a known, explicit follow-up.
+  - **A curated storage SOP class list, not DCMTK's full
+    `dcmAllStorageSOPClassUIDs`**, is proposed as presentation contexts for
+    C-GET/C-STORE (`kStorageSOPClasses` in `pacs_core.cpp`: CT, MR, enhanced
+    CT/MR, CR, DX, US, secondary capture, XA, NM, PET, RT image/dose/struct/
+    plan). A DICOM association caps presentation contexts at 128
+    (1-byte, odd-only context ID), and this sandbox had no way to confirm
+    whether DCMTK's association negotiation silently truncates, errors, or
+    does something else if asked to propose more than that -- rather than
+    guess, the list covers the modalities this viewer's local-file decode
+    path already supports and stays comfortably under the limit. An
+    unusual modality's SOP class not in this list will fail to retrieve
+    with an explicit "no presentation context" error on that instance, not
+    silently -- extend the list if that happens against a real PACS.
+  - Also worth knowing: `DCMTK_WITH_OPENSSL=OFF` (a deliberate choice made
+    earlier in this port to avoid an extra cross-compiled dependency) means
+    `dcmtls` has no real TLS backing even though it's cross-compiled --
+    encrypted DICOM (TLS) is **not supported**, and isn't wired into
+    `Package.swift` at all (only `dcmnet` is linked; `dcmqrdb`/`dcmtls`
+    XCFrameworks exist on disk, unused). Plain, unencrypted DICOM networking
+    only, same as most on-premises hospital PACS deployments today, but
+    worth flagging for anyone pointing this at a PACS that requires TLS.
+- **`Sources/DCMTKWrapper/include/PACSHelper.h` +
+  `Sources/DCMTKWrapper/PACSHelper.mm`** -- the Objective-C++ bridge exposing
+  `pacs_core`'s functionality to Swift as `PACSClient`/`PACSStudyResult`,
+  following the same ivar/init conventions `DCMTKHelper.mm` already
+  established. **Not compiler-verified** (no Foundation/ObjC runtime in the
+  sandbox to check it against) -- ordinary NSString/NSArray/block bridging
+  code, but genuinely unverified, unlike `pacs_core.cpp`. Also factored a
+  previously-`static`, `DCMTKHelper.mm`-private `ensureDCMTKInitialized()`
+  (DCMDICTPATH setup, required before any DCMTK call from any file) out to
+  a new shared internal header (`DCMTKSharedInit.h`) so `PACSHelper.mm`
+  could call the exact same one-time init rather than duplicating it.
+- **`Sources/OpenDicomViewer/PACSService.swift`** (async/await wrapper +
+  `PACSNode`/`PACSStudy` Swift value types + `PACSSettingsStore` for
+  persisting the last-used node to `UserDefaults`) and
+  **`Sources/OpenDicomViewer/PACSBrowserView.swift`** (the SwiftUI query/
+  retrieve sheet: server settings, C-ECHO test, STUDY-level C-FIND search,
+  results list, per-study C-GET retrieve with progress, then
+  `DICOMModel.load(url:)` on the retrieved folder to open it through the
+  exact same path local files already use). **Not compiler-verified** --
+  same caveat as every other `.swift` file in this whole port; no Swift
+  toolchain has ever been available in the sandbox that wrote any of it.
+  `PACSBrowserView` is plain SwiftUI with no AppKit/UIKit dependency at all,
+  so unlike most of this port's view-layer work it needed no `#if os(...)`
+  gating for its own sake (a few `#if os(iOS)` blocks exist only for
+  iOS-only *keyboard type* modifiers, all in the already-proven-safe
+  "continue an existing chain, no `#else`" shape -- see the aspectRatio/View
+  compile-error writeup elsewhere in this project's history for the *unsafe*
+  shape that pattern must avoid).
+- **`Sources/OpenDicomViewer/ContentView.swift`** -- `SidebarView` gained a
+  toolbar button (network icon) opening `PACSBrowserView` as a sheet,
+  unconditionally on both platforms.
+
+**Verification summary, most to least verified:**
+1. `pacs_core.cpp`'s DCMTK API usage -- real compiler, real headers,
+   `-fsyntax-only -Wall -Wextra`, clean. Proves API-shape correctness, not
+   runtime correctness.
+2. Everything else (the ObjC++ bridge, all the new Swift code, the
+   `Package.swift` wiring) -- written carefully, matching established
+   patterns elsewhere in this codebase, but genuinely unverified by any
+   compiler. The very first `swift build` after this lands will be the
+   first time *any* of it has been parsed by a real Swift compiler, and (per
+   the `.iOS(.v17)`/`platforms:` situation described in "Known blockers"
+   above) even that only checks the macOS side -- the iOS-specific paths
+   still need step 0 done and a real Xcode iOS App target built to get real
+   feedback.
+3. Runtime behavior against an actual PACS -- **completely unverified**, and
+   can't be, from this sandbox. No DICOM network exists to test against.
+   Before relying on this for real studies, test C-ECHO first (cheapest,
+   fastest way to confirm host/port/AE title configuration and basic
+   connectivity), then a small C-FIND, then a C-GET retrieve of one small
+   study, against a real or test PACS (many vendors' PACS/VNA products, and
+   the open-source [Orthanc](https://www.orthanc-server.com/) server, are
+   reasonable options for a test target) before trusting it against
+   production data.
+
+Not implemented (explicit follow-ups, not silently missing):
+- C-MOVE (see the C-GET-vs-C-MOVE design note above) as a fallback for PACS
+  that don't support C-GET.
+- TLS/encrypted DICOM (`DCMTK_WITH_OPENSSL=OFF`; see above).
+- Multi-node PACS "address book" -- `PACSSettingsStore` persists exactly one
+  node today.
+- Query levels other than STUDY (no PATIENT/SERIES/IMAGE-level C-FIND, no
+  drill-down from a study into its series before retrieving).

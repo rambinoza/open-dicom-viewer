@@ -238,6 +238,10 @@ struct SidebarView: View {
     #if os(iOS)
     @State private var showingFileImporter = false
     #endif
+    // PACS networking (PACSBrowserView.swift / PACSService.swift): a plain, unconditional
+    // SwiftUI sheet -- unlike the file-importer above, PACSBrowserView has no AppKit/UIKit
+    // dependency at all, so this needs no #if os(...) gating on either platform.
+    @State private var showingPACSBrowser = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -250,9 +254,17 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Hide Sidebar")
-                
+
                 Spacer()
-                
+
+                Button(action: { showingPACSBrowser = true }) {
+                    Image(systemName: "network")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("PACS Query/Retrieve")
+
                 Button(action: openFile) {
                     HStack(spacing: 6) {
                         Image(systemName: "folder")
@@ -287,6 +299,9 @@ struct SidebarView: View {
             }
         }
         #endif
+        .sheet(isPresented: $showingPACSBrowser) {
+            PACSBrowserView(model: model)
+        }
     }
 
     private func openFile() {

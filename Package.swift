@@ -62,6 +62,14 @@ let package = Package(
         .binaryTarget(name: "DcmimgleXCFramework", path: "libs/xcframeworks/dcmimgle.xcframework"),
         .binaryTarget(name: "DcmjpegXCFramework", path: "libs/xcframeworks/dcmjpeg.xcframework"),
         .binaryTarget(name: "DcmjplsXCFramework", path: "libs/xcframeworks/dcmjpls.xcframework"),
+        // PACS networking (C-ECHO/C-FIND/C-GET/C-STORE -- PACSHelper.h/.mm, pacs_core.hpp/.cpp).
+        // scripts/setup_native_deps_ios.sh has always cross-compiled this XCFramework (it just
+        // sat unused until now -- see that script's comment on dcmnet/dcmqrdb/dcmtls). Only
+        // dcmnet is wired in: dcmqrdb (Query/Retrieve SCP database) and dcmtls (TLS) aren't
+        // needed since this app is a pure SCU/client and DCMTK_WITH_OPENSSL=OFF means dcmtls
+        // has no real TLS backing anyway (see pacs_core.hpp for the encrypted-DICOM limitation
+        // this implies, noted there as a follow-up rather than silently unmentioned).
+        .binaryTarget(name: "DcmnetXCFramework", path: "libs/xcframeworks/dcmnet.xcframework"),
         .binaryTarget(name: "DcmtkcharlsXCFramework", path: "libs/xcframeworks/dcmtkcharls.xcframework"),
         .binaryTarget(name: "Ijg8XCFramework", path: "libs/xcframeworks/ijg8.xcframework"),
         .binaryTarget(name: "Ijg12XCFramework", path: "libs/xcframeworks/ijg12.xcframework"),
@@ -79,6 +87,7 @@ let package = Package(
                 .target(name: "DcmimgleXCFramework", condition: .when(platforms: [.iOS])),
                 .target(name: "DcmjpegXCFramework", condition: .when(platforms: [.iOS])),
                 .target(name: "DcmjplsXCFramework", condition: .when(platforms: [.iOS])),
+                .target(name: "DcmnetXCFramework", condition: .when(platforms: [.iOS])),
                 .target(name: "DcmtkcharlsXCFramework", condition: .when(platforms: [.iOS])),
                 .target(name: "Ijg8XCFramework", condition: .when(platforms: [.iOS])),
                 .target(name: "Ijg12XCFramework", condition: .when(platforms: [.iOS])),
@@ -127,6 +136,9 @@ let package = Package(
             // XCFramework binaryTarget dependencies above instead).
             linkerSettings: [
                 .unsafeFlags(["-Llibs/dcmtk/lib", "-Llibs/openjpeg/lib"], .when(platforms: [.macOS])),
+                // PACS networking (see the DcmnetXCFramework NOTE above for why only dcmnet,
+                // not dcmqrdb/dcmtls, is linked).
+                .linkedLibrary("dcmnet", .when(platforms: [.macOS])),
                 .linkedLibrary("dcmimage", .when(platforms: [.macOS])),
                 .linkedLibrary("dcmimgle", .when(platforms: [.macOS])),
                 .linkedLibrary("dcmdata", .when(platforms: [.macOS])),
