@@ -16,6 +16,7 @@
 // Licensed under the MIT License. See LICENSE for details.
 
 import Foundation
+import CoreGraphics
 import simd
 import DCMTKWrapper
 
