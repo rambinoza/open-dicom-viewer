@@ -111,4 +111,40 @@ public enum PlatformImageFactory {
         return image.cgImage
         #endif
     }
+
+    /// Builds a PlatformImage from raw 8-bit display pixel bytes as returned by
+    /// DCMTKHelper.convertDICOMToDisplayPixels(_:width:height:samples:) and
+    /// DCMTKImageObject.renderPixelData(ww:wc:width:height:samples:) in DCMTKWrapper
+    /// (gray if `samples == 1`, interleaved RGB if `samples == 3`).
+    ///
+    /// DCMTKHelper used to build the CGImage/NSImage itself and hand back a finished
+    /// NSImage, but NSImage is AppKit-only. It now hands back the raw windowed pixel
+    /// bytes instead (identical on macOS/iOS -- see the NOTE in DCMTKHelper.h), and this
+    /// is the Swift-side counterpart that reconstructs the CGImage from them, mirroring
+    /// exactly what the Objective-C++ code used to do inline (same colorspace/bitmap-info
+    /// choices). Always renders at the pixel data's own natural size -- every call site
+    /// that used to pass an explicit display width/height to the old NSImage-returning
+    /// methods always passed 0/0 ("use natural size"), so that parameter pair wasn't
+    /// carried over into this helper; call `resized(_:to:)` afterward if a caller ever
+    /// needs non-uniform display-size baking for one of these images.
+    public static func make(dcmtkPixelData data: Data, width: Int, height: Int, samples: Int) -> PlatformImage? {
+        guard width > 0, height > 0, samples == 1 || samples == 3 else { return nil }
+        let colorSpace = samples == 1 ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB()
+        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+        guard let cgImage = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 8 * samples,
+            bytesPerRow: width * samples,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo,
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ) else { return nil }
+        return make(cgImage: cgImage, displaySize: CGSize(width: width, height: height))
+    }
 }

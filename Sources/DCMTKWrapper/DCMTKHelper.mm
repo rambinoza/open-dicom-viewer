@@ -4,7 +4,9 @@
 // Objective-C++ bridge to the DCMTK library. Provides two interfaces:
 //
 // 1. DCMTKHelper (class methods):
-//    - convertDICOMToNSImage: Full DICOM-to-NSImage conversion
+//    - convertDICOMToDisplayPixels: Full DICOM decode to raw 8-bit display
+//      pixels (gray/RGB NSData + dimensions -- platform-neutral; see
+//      DCMTKHelper.h for why this isn't an NSImage)
 //    - getRawPixelData: Extract raw pixel buffer with metadata
 //    - decodeJPEG2000DICOM: OpenJPEG fallback for JPEG 2000 transfer syntaxes
 //    - lastErrorForPath: Human-readable error for failed loads
@@ -12,7 +14,9 @@
 // 2. DCMTKImageObject (instance, retains decoded state):
 //    - Keeps the decoded DCMTK image in memory for efficient re-rendering
 //      at different window/level values without re-parsing the file
-//    - Used for interactive W/L adjustment
+//    - Used for interactive W/L adjustment (renderPixelDataWithWW:wc:...
+//      returns raw 8-bit display pixels the same way convertDICOMToDisplayPixels
+//      does, for the same platform-neutrality reason)
 //
 // Supports standard DICOM transfer syntaxes including JPEG, JPEG-LS,
 // and JPEG 2000 (via OpenJPEG). Handles both 8-bit and 16-bit pixel data,
@@ -63,7 +67,10 @@ static void ensureDCMTKInitialized(void) {
   ensureDCMTKInitialized();
 }
 
-+ (NSImage *)convertDICOMToNSImage:(NSString *)path {
++ (NSData *)convertDICOMToDisplayPixels:(NSString *)path
+                                   width:(NSInteger *)width
+                                  height:(NSInteger *)height
+                                 samples:(NSInteger *)samples {
   if (!path)
     return nil;
 
@@ -75,9 +82,9 @@ static void ensureDCMTKInitialized(void) {
     return nil;
   }
 
-  unsigned long width = image->getWidth();
-  unsigned long height = image->getHeight();
-  int samples = image->isMonochrome() ? 1 : 3;
+  *width = (NSInteger)image->getWidth();
+  *height = (NSInteger)image->getHeight();
+  *samples = image->isMonochrome() ? 1 : 3;
 
   // Force 8-bit output for display
   unsigned long size = image->getOutputDataSize(8);
@@ -87,35 +94,19 @@ static void ensureDCMTKInitialized(void) {
   }
 
   uint8_t *buffer = (uint8_t *)malloc(size);
-  if (image->getOutputData(buffer, size, 8)) {
-    CGColorSpaceRef colorSpace = image->isMonochrome()
-                                     ? CGColorSpaceCreateDeviceGray()
-                                     : CGColorSpaceCreateDeviceRGB();
-
-    // CFData takes ownership of buffer if we use kCFAllocatorMalloc?
-    // No, CFDataCreateWithBytesNoCopy with kCFAllocatorMalloc means CFData will
-    // call free() on release.
-    CFDataRef data = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, buffer,
-                                                 size, kCFAllocatorMalloc);
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
-
-    CGBitmapInfo bitmapInfo = kCGBitmapByteOrderDefault | kCGImageAlphaNone;
-
-    CGImageRef cgImage = CGImageCreate(
-        width, height, 8, 8 * samples, width * samples, colorSpace, bitmapInfo,
-        provider, NULL, false, kCGRenderingIntentDefault);
-
-    NSImage *nsImage =
-        [[NSImage alloc] initWithCGImage:cgImage
-                                    size:NSMakeSize(width, height)];
-
-    CGImageRelease(cgImage);
-    CGDataProviderRelease(provider);
-    CFRelease(data);
-    CGColorSpaceRelease(colorSpace);
-
+  if (!buffer) {
     delete image;
-    return nsImage;
+    return nil;
+  }
+  if (image->getOutputData(buffer, size, 8)) {
+    // dataWithBytesNoCopy:freeWhenDone: hands ownership of buffer to the
+    // NSData -- it calls free() on dealloc, same lifetime contract the old
+    // CFDataCreateWithBytesNoCopy(..., kCFAllocatorMalloc) here had.
+    NSData *data = [NSData dataWithBytesNoCopy:buffer
+                                         length:size
+                                   freeWhenDone:YES];
+    delete image;
+    return data;
   }
 
   free(buffer);
@@ -636,10 +627,11 @@ static void opj_info_callback(const char *msg, void *client_data) {
   }
 }
 
-- (NSImage *)renderImageWithWidth:(NSInteger)width
-                           height:(NSInteger)height
-                               ww:(double)ww
-                               wc:(double)wc {
+- (NSData *)renderPixelDataWithWW:(double)ww
+                                wc:(double)wc
+                             width:(NSInteger *)width
+                            height:(NSInteger *)height
+                           samples:(NSInteger *)samples {
   if (!_image)
     return nil;
 
@@ -655,37 +647,17 @@ static void opj_info_callback(const char *msg, void *client_data) {
     return nil;
 
   uint8_t *buffer = (uint8_t *)malloc(size);
+  if (!buffer)
+    return nil;
   if (_image->getOutputData(buffer, size, 8)) {
-    CGColorSpaceRef colorSpace = _image->isMonochrome()
-                                     ? CGColorSpaceCreateDeviceGray()
-                                     : CGColorSpaceCreateDeviceRGB();
+    *width = (NSInteger)_image->getWidth();
+    *height = (NSInteger)_image->getHeight();
+    *samples = _image->isMonochrome() ? 1 : 3;
 
-    CFDataRef data = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, buffer,
-                                                 size, kCFAllocatorMalloc);
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
-
-    int samples = _image->isMonochrome() ? 1 : 3;
-    CGBitmapInfo bitmapInfo = kCGBitmapByteOrderDefault | kCGImageAlphaNone;
-
-    CGImageRef cgImage =
-        CGImageCreate(_image->getWidth(), _image->getHeight(), 8, 8 * samples,
-                      _image->getWidth() * samples, colorSpace, bitmapInfo,
-                      provider, NULL, false, kCGRenderingIntentDefault);
-
-    // Use actual image dimensions when caller passes 0
-    NSInteger finalWidth = (width > 0) ? width : (NSInteger)_image->getWidth();
-    NSInteger finalHeight = (height > 0) ? height : (NSInteger)_image->getHeight();
-
-    NSImage *nsImage =
-        [[NSImage alloc] initWithCGImage:cgImage
-                                    size:NSMakeSize(finalWidth, finalHeight)];
-
-    CGImageRelease(cgImage);
-    CGDataProviderRelease(provider);
-    CFRelease(data);
-    CGColorSpaceRelease(colorSpace);
-
-    return nsImage;
+    // dataWithBytesNoCopy:freeWhenDone: hands ownership of buffer to the
+    // NSData, same lifetime contract the old CFDataCreateWithBytesNoCopy
+    // here had.
+    return [NSData dataWithBytesNoCopy:buffer length:size freeWhenDone:YES];
   }
 
   free(buffer);

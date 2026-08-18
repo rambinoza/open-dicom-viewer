@@ -565,12 +565,7 @@ class DICOMModel: ObservableObject {
                          }
                          return
                     } else {
-                        // NOTE (iOS port): DCMTKHelper.convertDICOM(toNSImage:) is the Objective-C++
-                        // bridge in DCMTKWrapper, which is hardcoded to NSImage/AppKit today. It isn't
-                        // touched by this Swift-side PlatformImage pass -- the wrapper itself needs to
-                        // return a CGImageRef (or be duplicated per-platform) as part of cross-compiling
-                        // DCMTK for iOS. Tracked as a follow-up to the DCMTK iOS build task.
-                        if let img = DCMTKHelper.convertDICOM(toNSImage: url.path) {
+                        if let img = self.decodeDICOMToPlatformImage(path: url.path) {
                              let leveledImg = self.autoLevelImage(img) ?? img
                              DispatchQueue.main.async {
                                  self.seriesThumbnails[series.id] = leveledImg
@@ -894,7 +889,7 @@ class DICOMModel: ObservableObject {
                      // W/L Mismatch: Ignore cached image, fall through to re-render using cachedDCMTK if available
                      // If we have cachedDCMTK, we can fast-path re-render here!
                      if let dcmObj = cachedDCMTK {
-                         if let newImg = dcmObj.renderImage(withWidth: 0, height: 0, ww: targetWW, wc: targetWC) {
+                         if let newImg = self.renderPlatformImage(from: dcmObj, ww: targetWW, wc: targetWC) {
                              DispatchQueue.main.async {
                                  self.image = newImg
                                  self.rawPixelData = cachedRaw
@@ -976,7 +971,7 @@ class DICOMModel: ObservableObject {
                 }
                 
                 // 6. Render
-                if let nsImage = dcmObj.renderImage(withWidth: 0, height: 0, ww: ww, wc: wc) {
+                if let nsImage = self.renderPlatformImage(from: dcmObj, ww: ww, wc: wc) {
                     self.imageCache.setObject(nsImage, forKey: url as NSURL)
                     self.dcmtkCache.setObject(dcmObj, forKey: url as NSURL)
                     self.imageCacheParamsLock.lock()
@@ -1196,7 +1191,7 @@ class DICOMModel: ObservableObject {
                     }
                     
                     // Render
-                    if let nsImage = dcmObj.renderImage(withWidth: 0, height: 0, ww: renderWW, wc: renderWC) {
+                    if let nsImage = self.renderPlatformImage(from: dcmObj, ww: renderWW, wc: renderWC) {
                         self.imageCache.setObject(nsImage, forKey: imageFile.url as NSURL)
                         self.dcmtkCache.setObject(dcmObj, forKey: imageFile.url as NSURL)
                         self.imageCacheParamsLock.lock()
@@ -1470,7 +1465,7 @@ class DICOMModel: ObservableObject {
         // Use DCMTK Object for rendering if available
         if let dcmObj = self.dcmtkImage {
              // print("DEBUG: Adjusting W/L - WW: \(self.windowWidth), WC: \(self.windowCenter)")
-             if let newImg = dcmObj.renderImage(withWidth: 0, height: 0, ww: self.windowWidth, wc: self.windowCenter) {
+             if let newImg = self.renderPlatformImage(from: dcmObj, ww: self.windowWidth, wc: self.windowCenter) {
                  self.image = newImg
              }
         } else if let data = self.rawPixelData {
@@ -1727,6 +1722,37 @@ class DICOMModel: ObservableObject {
         return renderImage(width: width, height: height, pixelData: pixelData, ww: ww, wc: wc,
                            bits: self.bitDepth, spp: self.samples, signed: self.isSigned, mono1: self.isMonochrome1)
     }
+
+    // NOTE (iOS port): the two helpers below are the Swift-side counterparts of
+    // DCMTKWrapper's DCMTKHelper.convertDICOMToDisplayPixels(_:width:height:samples:) and
+    // DCMTKImageObject.renderPixelData(ww:wc:width:height:samples:) -- both used to return
+    // a finished NSImage directly from Objective-C++, which hard-blocked this target from
+    // compiling for iOS (AppKit-only). They now return raw 8-bit display pixel bytes
+    // instead, and these helpers reconstruct the PlatformImage from those bytes on the
+    // Swift side (via PlatformImageFactory.make(dcmtkPixelData:...) in PlatformCompat.swift),
+    // which works identically on macOS and iOS.
+
+    /// DCMTK's own default-windowed decode of `path`, as a PlatformImage. Swift-side
+    /// counterpart of the old `DCMTKHelper.convertDICOM(toNSImage:)`.
+    private func decodeDICOMToPlatformImage(path: String) -> PlatformImage? {
+        var w: Int = 0, h: Int = 0, s: Int = 0
+        guard let pixelData = DCMTKHelper.convertDICOMToDisplayPixels(path, width: &w, height: &h, samples: &s) else {
+            return nil
+        }
+        return PlatformImageFactory.make(dcmtkPixelData: pixelData as Data, width: w, height: h, samples: s)
+    }
+
+    /// Applies window/level to an already-decoded DCMTKImageObject and returns the result as
+    /// a PlatformImage. Swift-side counterpart of the old `dcmObj.renderImage(withWidth:height:ww:wc:)`
+    /// (which always got called with width:0, height:0 -- "use natural size" -- everywhere in this
+    /// file, so that parameter pair isn't carried over here; see the NOTE in DCMTKHelper.h).
+    private func renderPlatformImage(from dcmObj: DCMTKImageObject, ww: Double, wc: Double) -> PlatformImage? {
+        var w: Int = 0, h: Int = 0, s: Int = 0
+        guard let pixelData = dcmObj.renderPixelData(ww: ww, wc: wc, width: &w, height: &h, samples: &s) else {
+            return nil
+        }
+        return PlatformImageFactory.make(dcmtkPixelData: pixelData as Data, width: w, height: h, samples: s)
+    }
     
     // Track currently caching series to avoid redundant cancellations
     private var currentCachingSeriesUID: String? = nil
@@ -1849,7 +1875,7 @@ class DICOMModel: ObservableObject {
                  self.rawDataCache.setObject(r as NSData, forKey: url as NSURL)
              } else {
                  // Compressed / Native failed -> Use DCMTK
-                 if let img = DCMTKHelper.convertDICOM(toNSImage: url.path) {
+                 if let img = self.decodeDICOMToPlatformImage(path: url.path) {
                       self.imageCache.setObject(img, forKey: url as NSURL)
                  } else {
                      // DCMTK failed -> try JPEG2000 fallback via OpenJPEG
@@ -3066,7 +3092,7 @@ class DICOMModel: ObservableObject {
                         panel.windowWidth = preservedWW
                         panel.windowCenter = preservedWC
                         if let dcmtk = cachedDCMTK,
-                           let rerendered = dcmtk.renderImage(withWidth: 0, height: 0, ww: preservedWW, wc: preservedWC) {
+                           let rerendered = self.renderPlatformImage(from: dcmtk, ww: preservedWW, wc: preservedWC) {
                             panel.setDisplayImage(rerendered)
                         } else if let raw = cachedRaw, panel.imageWidth > 0,
                                   let rerendered = self.renderImage(width: panel.imageWidth, height: panel.imageHeight, pixelData: raw, ww: preservedWW, wc: preservedWC,
@@ -3163,7 +3189,7 @@ class DICOMModel: ObservableObject {
                     wc = minVal + (ww / 2.0)
                 }
 
-                if let nsImage = dcmObj.renderImage(withWidth: 0, height: 0, ww: ww, wc: wc) {
+                if let nsImage = self.renderPlatformImage(from: dcmObj, ww: ww, wc: wc) {
                     self.imageCache.setObject(nsImage, forKey: url as NSURL)
                     self.dcmtkCache.setObject(dcmObj, forKey: url as NSURL)
                     self.imageCacheParamsLock.lock()
@@ -3185,7 +3211,7 @@ class DICOMModel: ObservableObject {
                         if preservedWW > 0 {
                             panel.windowWidth = preservedWW
                             panel.windowCenter = preservedWC
-                            if let rerendered = dcmObj.renderImage(withWidth: 0, height: 0, ww: preservedWW, wc: preservedWC) {
+                            if let rerendered = self.renderPlatformImage(from: dcmObj, ww: preservedWW, wc: preservedWC) {
                                 panel.setDisplayImage(rerendered)
                             } else {
                                 panel.setDisplayImage(nsImage)
@@ -3390,7 +3416,7 @@ class DICOMModel: ObservableObject {
         switch panel.panelMode {
         case .slice2D:
             if let dcmObj = panel.dcmtkImage {
-                if let newImg = dcmObj.renderImage(withWidth: 0, height: 0, ww: panel.windowWidth, wc: panel.windowCenter) {
+                if let newImg = self.renderPlatformImage(from: dcmObj, ww: panel.windowWidth, wc: panel.windowCenter) {
                     panel.setDisplayImage(newImg)
                 }
             } else if let data = panel.rawPixelData {
@@ -3619,7 +3645,7 @@ class DICOMModel: ObservableObject {
 
         // Try DCMTK object cache first — best quality, can render with panel's W/L
         if hasUserWL, let dcmtk = dcmtkCache.object(forKey: url as NSURL) {
-            if let rendered = dcmtk.renderImage(withWidth: 0, height: 0, ww: panelWW, wc: panelWC) {
+            if let rendered = self.renderPlatformImage(from: dcmtk, ww: panelWW, wc: panelWC) {
                 return rendered
             }
         }
@@ -3651,7 +3677,7 @@ class DICOMModel: ObservableObject {
             imageCacheParamsLock.unlock()
             let ww = params?.0 ?? 400
             let wc = params?.1 ?? 200
-            return dcmtk.renderImage(withWidth: 0, height: 0, ww: ww, wc: wc)
+            return self.renderPlatformImage(from: dcmtk, ww: ww, wc: wc)
         }
 
         return nil

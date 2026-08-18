@@ -112,12 +112,27 @@ port:
   exist on Apple platforms at all) if a similar issue resurfaces.
   This alone does **not** make `DCMTKWrapper` compile for iOS yet, though --
   see the next bullet.
-- **`DCMTKHelper.convertDICOM(toNSImage:)` and `-renderImageWithWidth:...`**
-  (the Objective-C++ bridge in `Sources/DCMTKWrapper/DCMTKHelper.mm`/`.h`) are
-  hardcoded to return `NSImage`, i.e. they only compile against AppKit. This
-  needs to change to return a `CGImageRef` (or be duplicated per-platform)
-  before `DCMTKWrapper` itself can even compile for iOS -- independent of
-  having iOS-built `.a`/XCFramework libs to link against.
+- ~~`DCMTKHelper.convertDICOM(toNSImage:)` and `-renderImageWithWidth:...`
+  are hardcoded to return `NSImage`.~~ **Done.** The Objective-C++ bridge
+  (`Sources/DCMTKWrapper/DCMTKHelper.mm`/`.h`) no longer imports AppKit at
+  all or returns `NSImage` from anything -- `DCMTKHelper.convertDICOMToDisplayPixels(_:width:height:samples:)`
+  and `DCMTKImageObject.renderPixelData(ww:wc:width:height:samples:)` now
+  return the decoded/rendered image as raw 8-bit pixel bytes (`NSData`, gray
+  or interleaved RGB per `samples`) plus its dimensions instead, matching the
+  shape `getRawPixelData:`/`decodeJPEG2000DICOM:` already used (they never
+  touched AppKit). `Sources/OpenDicomViewer/PlatformCompat.swift`'s new
+  `PlatformImageFactory.make(dcmtkPixelData:width:height:samples:)` and two
+  new private helpers in `DICOMModel.swift`
+  (`decodeDICOMToPlatformImage(path:)`, `renderPlatformImage(from:ww:wc:)`)
+  reconstruct the `CGImage`/`PlatformImage` from those bytes on the Swift
+  side instead, which works identically on macOS and iOS -- see the NOTE
+  comments in `DCMTKHelper.h` and `PlatformCompat.swift` for the full
+  reasoning. `NS_SWIFT_NAME` pins the exact Swift name for both renamed
+  Objective-C methods rather than relying on the Clang importer's
+  preposition-splitting heuristic, since this change couldn't be verified
+  against a real Swift toolchain in the sandbox that made it -- **run `swift
+  build` after pulling this to confirm it actually compiles**, the same as
+  every other change made in this sandbox.
 - **`DICOMModel.openFolder()` (NSOpenPanel) and the global Shift-key `NSEvent`
   monitor** are gated behind `#if os(macOS)` with no iOS implementation yet.
   iOS file picking should use SwiftUI's `.fileImporter` (or
