@@ -129,10 +129,24 @@ port:
   comments in `DCMTKHelper.h` and `PlatformCompat.swift` for the full
   reasoning. `NS_SWIFT_NAME` pins the exact Swift name for both renamed
   Objective-C methods rather than relying on the Clang importer's
-  preposition-splitting heuristic, since this change couldn't be verified
-  against a real Swift toolchain in the sandbox that made it -- **run `swift
-  build` after pulling this to confirm it actually compiles**, the same as
-  every other change made in this sandbox.
+  preposition-splitting heuristic.
+  **Verified with a real `swift build` on macOS** (the sandbox that made this
+  change has no Swift toolchain of its own). That build caught one knock-on
+  issue worth knowing about if a similar AppKit-removal happens again:
+  `MPREngine.swift` used `CGContext`/`CGColorSpaceCreateDeviceGray`/
+  `CGImageAlphaInfo` without ever explicitly importing `CoreGraphics` -- it
+  had been getting those symbols for free because `DCMTKHelper.h` used to
+  `#import <AppKit/AppKit.h>`, and Swift's ClangImporter exposes a Clang
+  module's whole transitive header-include graph to any Swift file that
+  imports it. Removing AppKit from `DCMTKHelper.h` closed that accidental
+  side channel and surfaced the missing import as real compile errors;
+  fixed by just adding `import CoreGraphics` to `MPREngine.swift`. Every
+  other Swift file in the project was audited for the same risk (any raw
+  CoreGraphics C-API use without an explicit `CoreGraphics`/`AppKit`/`UIKit`
+  import) -- none found; the rest only use basic geometry types
+  (`CGPoint`/`CGRect`/`CGSize`/`CGFloat`), which come bundled with plain
+  `import Foundation` on Apple platforms via `NSGeometry.h`, independent of
+  AppKit.
 - **`DICOMModel.openFolder()` (NSOpenPanel) and the global Shift-key `NSEvent`
   monitor** are gated behind `#if os(macOS)` with no iOS implementation yet.
   iOS file picking should use SwiftUI's `.fileImporter` (or
