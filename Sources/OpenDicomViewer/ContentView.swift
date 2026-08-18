@@ -192,7 +192,15 @@ struct ContentView: View {
             HelpView()
         }
         .preferredColorScheme(.dark)
+        // WindowAccessor customizes an NSWindow's titlebar/traffic-light buttons and installs
+        // an IME-independent key interceptor -- entirely macOS window-chrome concepts with no
+        // iOS equivalent (a standard iOS app has no titlebar to customize). The keyboard
+        // shortcuts it also handled as a fallback path are unaffected on iOS: touch users
+        // drive tool selection via the on-screen ToolPalette instead (see
+        // PanelTouchInteractView.swift's file-level NOTE).
+        #if os(macOS)
         .background(WindowAccessor(model: model))
+        #endif
     }
 
     // MARK: - Handlers
@@ -223,7 +231,14 @@ struct ContentView: View {
 struct SidebarView: View {
     @ObservedObject var model: DICOMModel
     @Binding var columnVisibility: NavigationSplitViewVisibility
-    
+    // iOS-only: DICOMModel.openFolder() is macOS-only (NSOpenPanel); iOS instead drives a
+    // SwiftUI `.fileImporter` from this view and calls `model.load(url:)` directly with the
+    // picked URL. See the security-scope NOTE on DICOMModel.load(url:) for what handling a
+    // sandboxed, `.fileImporter`-provided URL needed there.
+    #if os(iOS)
+    @State private var showingFileImporter = false
+    #endif
+
     var body: some View {
         VStack(spacing: 0) {
             // Custom Toolbar / Header
@@ -256,10 +271,30 @@ struct SidebarView: View {
             
             SeriesListView(model: model)
         }
+        #if os(iOS)
+        .fileImporter(
+            isPresented: $showingFileImporter,
+            allowedContentTypes: [.folder, UTType(filenameExtension: "dcm") ?? .data],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    model.load(url: url)
+                }
+            case .failure(let error):
+                model.errorMessage = "Could not open: \(error.localizedDescription)"
+            }
+        }
+        #endif
     }
-    
+
     private func openFile() {
+        #if os(macOS)
         model.openFolder()
+        #else
+        showingFileImporter = true
+        #endif
     }
 }
 
@@ -420,8 +455,15 @@ struct SeriesRow: View {
         HStack {
             Group {
                 if let thumb = model.seriesThumbnails[series.id] {
+                    // Image(nsImage:)/Image(uiImage:) are AppKit/UIKit-specific SwiftUI Image
+                    // initializers; PlatformImage (PlatformCompat.swift) itself is cross-platform.
+                    #if os(macOS)
                     Image(nsImage: thumb)
                         .resizable()
+                    #else
+                    Image(uiImage: thumb)
+                        .resizable()
+                    #endif
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 40, height: 40)
                         .cornerRadius(4)
@@ -488,10 +530,22 @@ struct PanelPositionIndicator: View {
     }
 }
 
+// NOTE (iOS port): DetailView and everything below it through ScrollerInteractionView
+// (InteractiveDICOMView/DICOMInteractView, AdjustmentToolbar, HistogramView, DICOMScroller,
+// ThumbnailPopup, ScrollerInteractionView) is legacy single-panel UI, explicitly marked
+// "used as fallback" in this file's own header comment -- it is not part of the live
+// NavigationSplitView hierarchy in ContentView's body (that goes through MultiPanelContainer/
+// PanelView instead, which has its own separately-named live equivalents:
+// PanelInteractiveDICOMView, PanelAdjustmentToolbar, PanelHistogramView, PanelDICOMScroller,
+// PanelThumbnailPopup, PanelScrollerInteractionView -- see MultiPanelContainer.swift and
+// PanelTouchInteractView.swift). `DetailView(` has zero call sites anywhere in this codebase.
+// Gating this whole dead-on-both-platforms-already, AppKit-only block behind `#if os(macOS)`
+// costs nothing on either platform rather than porting genuinely-unused code to iOS.
+#if os(macOS)
 struct DetailView: View {
     @ObservedObject var model: DICOMModel
     @FocusState.Binding var isFocused: Bool
-    
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -1135,3 +1189,4 @@ struct ScrollerInteractionView: NSViewRepresentable {
         }
     }
 }
+#endif

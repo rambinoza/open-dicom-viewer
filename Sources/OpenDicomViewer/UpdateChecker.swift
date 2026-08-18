@@ -1,5 +1,9 @@
 import Foundation
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 @MainActor
 class UpdateChecker: ObservableObject {
@@ -78,7 +82,18 @@ class UpdateChecker: ObservableObject {
     }
 
     func openDownload(_ url: URL) {
+        // NOTE (iOS port): this whole checker's design (polling GitHub releases for a .dmg
+        // asset) is macOS-distribution-specific -- an iOS build would use App Store/TestFlight
+        // updates instead of a custom in-app checker. Kept compiling here (rather than removed)
+        // since disabling/removing the feature outright for iOS is a product decision, not a
+        // mechanical build fix; UIApplication.shared.open(url) is the direct AppKit->UIKit
+        // equivalent if this ever is actually wanted on iOS, e.g. pointed at an App Store URL
+        // instead of a .dmg.
+        #if os(macOS)
         NSWorkspace.shared.open(url)
+        #else
+        UIApplication.shared.open(url)
+        #endif
     }
 
     private func findDMGURL(in json: [String: Any]?) -> URL? {

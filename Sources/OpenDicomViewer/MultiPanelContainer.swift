@@ -326,6 +326,15 @@ struct PanelView: View {
 
 // MARK: - Panel Interactive DICOM View (NSViewRepresentable)
 
+// NOTE (iOS port): this whole NSViewRepresentable/NSView pair is macOS-only. The iOS
+// counterpart -- same symbol names (`PanelInteractiveDICOMView`, nested
+// `PanelDICOMInteractView`), a UIViewRepresentable/UIView pair built with UITouch/
+// UIGestureRecognizer instead of NSEvent -- lives in PanelTouchInteractView.swift. See
+// that file's header NOTE for the full mouse-to-touch interaction mapping. PanelView
+// below (and DICOMModel.swift's cine-playback code) call `PanelInteractiveDICOMView(...)`
+// completely unconditionally; whichever platform's version of this symbol exists is the
+// only one visible to that build, so neither call site needed to change.
+#if os(macOS)
 struct PanelInteractiveDICOMView: NSViewRepresentable {
     @ObservedObject var model: DICOMModel
     @ObservedObject var panel: PanelState
@@ -1331,6 +1340,7 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
         }
     }
 }
+#endif
 
 // MARK: - ROI Overlay
 
@@ -1633,8 +1643,16 @@ struct PanelThumbnailPopup: View {
                 .cornerRadius(4)
 
             if let img = model.getCachedImageForPanel(panel, at: index) {
+                // Image(nsImage:)/Image(uiImage:) are AppKit/UIKit-specific SwiftUI Image
+                // initializers -- PlatformImage itself is cross-platform (PlatformCompat.swift)
+                // but SwiftUI's Image type has no single init that accepts it directly.
+                #if os(macOS)
                 Image(nsImage: img)
                     .resizable()
+                #else
+                Image(uiImage: img)
+                    .resizable()
+                #endif
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 80, height: 80)
                     .background(Color.black)
@@ -1654,6 +1672,12 @@ struct PanelThumbnailPopup: View {
 
 // MARK: - Panel Scroller Interaction View
 
+// NOTE (iOS port): macOS-only, same pattern as PanelInteractiveDICOMView above -- the iOS
+// counterpart (same symbol name, callback interface identical: onDrag/onHover/onEnter/onExit)
+// lives in PanelTouchInteractView.swift, built with a UIPanGestureRecognizer instead of
+// NSEvent/NSTrackingArea. PanelDICOMScroller (below) calls `PanelScrollerInteractionView(...)`
+// unconditionally and needed no changes.
+#if os(macOS)
 struct PanelScrollerInteractionView: NSViewRepresentable {
     var onDrag: (CGPoint) -> Void
     var onHover: (CGPoint) -> Void
@@ -1708,6 +1732,7 @@ struct PanelScrollerInteractionView: NSViewRepresentable {
         }
     }
 }
+#endif
 
 // MARK: - Orientation Labels Overlay
 
@@ -2205,12 +2230,61 @@ struct ToolPalette: View {
                 .buttonStyle(.plain)
                 .help("\(tool.rawValue) (\(tool.shortcutHint))")
             }
+
+            #if os(iOS)
+            // NOTE (iOS port): reset/invert/flip/rotate/fit-to-window only ever had keyboard
+            // shortcuts (r/i/h/]/[/f, MultiPanelContainer.swift's performKeyEquivalent/keyDown)
+            // -- no on-screen button anywhere, since macOS always has a keyboard. iOS has none
+            // by default, so these need a touch affordance; added here rather than a new
+            // separate toolbar since ToolPalette is already the natural "always-visible column
+            // of panel actions" location.
+            Divider().padding(.vertical, 2)
+            iOSPanelActionButton(systemImage: "arrow.counterclockwise", help: "Reset View (R)") {
+                model.resetViewForPanel(model.activePanel)
+            }
+            iOSPanelActionButton(systemImage: "circle.righthalf.filled", help: "Invert (I)") {
+                model.invertForPanel(model.activePanel)
+            }
+            iOSPanelActionButton(systemImage: "arrow.left.and.right", help: "Flip Horizontal (H)") {
+                model.flipHorizontalForPanel(model.activePanel)
+            }
+            iOSPanelActionButton(systemImage: "rotate.right", help: "Rotate Clockwise (])") {
+                model.rotateClockwiseForPanel(model.activePanel)
+            }
+            iOSPanelActionButton(systemImage: "rotate.left", help: "Rotate Counter-Clockwise ([)") {
+                model.rotateCounterClockwiseForPanel(model.activePanel)
+            }
+            iOSPanelActionButton(systemImage: "arrow.up.left.and.arrow.down.right", help: "Fit to Window (F)") {
+                model.fitToWindowForPanel(model.activePanel)
+            }
+            #endif
         }
         .padding(4)
         .background(.ultraThinMaterial)
         .cornerRadius(8)
     }
 }
+
+#if os(iOS)
+/// A single icon-only action button in ToolPalette's iOS-only extra row, matching the visual
+/// style of the tool buttons above it (same size, same plain button style).
+private struct iOSPanelActionButton: View {
+    let systemImage: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14))
+                .frame(width: 32, height: 28)
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+#endif
 
 // MARK: - Cursor Info Overlay (HU Readout)
 

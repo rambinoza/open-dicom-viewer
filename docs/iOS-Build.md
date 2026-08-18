@@ -147,23 +147,106 @@ port:
   (`CGPoint`/`CGRect`/`CGSize`/`CGFloat`), which come bundled with plain
   `import Foundation` on Apple platforms via `NSGeometry.h`, independent of
   AppKit.
-- **`DICOMModel.openFolder()` (NSOpenPanel) and the global Shift-key `NSEvent`
-  monitor** are gated behind `#if os(macOS)` with no iOS implementation yet.
-  iOS file picking should use SwiftUI's `.fileImporter` (or
-  `UIDocumentPickerViewController`) calling `DICOMModel.load(url:)` directly
-  from the view layer instead.
-- **`ContentView.swift`, `MultiPanelContainer.swift`, `WindowAccessor.swift`**
-  still contain the original macOS mouse/keyboard-driven interaction code
-  (`NSView` subclasses for drag-based window/level, pan, slice-scrolling,
-  `NSCursor`, `NSEvent`-based keyboard shortcuts). None of this has an iOS
-  touch equivalent yet; a parallel SwiftUI-gesture-based iOS interaction layer
-  is planned as a separate task, alongside (not replacing) this macOS code.
+- ~~`DICOMModel.openFolder()` (NSOpenPanel) and the global Shift-key `NSEvent`
+  monitor have no iOS implementation.~~ **Done** (openFolder), **acceptable
+  as-is** (Shift monitor). `SidebarView` (ContentView.swift) now drives a
+  SwiftUI `.fileImporter` on iOS instead, calling `DICOMModel.load(url:)`
+  directly with the picked URL -- see `SidebarView.openFile()`/
+  `.fileImporter(...)`. This surfaced a real, previously-latent bug in
+  `load(url:)`: it released the security-scoped resource via `defer` at the
+  end of its *synchronous* body, but the actual directory scan/file load runs
+  *asynchronously* on `DispatchQueue.main.async` just below that -- so the
+  scope was being released before the async work it was protecting ever ran.
+  Invisible on a non-sandboxed macOS build (`startAccessingSecurityScopedResource()`
+  always returns `false` there, making the deferred release a no-op regardless
+  of timing), but a real bug for iOS, where every app is sandboxed and a
+  `.fileImporter`-picked URL outside the app's container genuinely needs its
+  scope held open for as long as files are read from it. Fixed by holding the
+  scope open for the dataset's lifetime (released when the *next* `load(url:)`
+  call acquires a different URL, or at `deinit`) instead of trying to
+  precisely bracket the async scan -- see the NOTE comments on
+  `DICOMModel.load(url:)` and the new `securityScopedURL` property. The
+  Shift-key monitor itself has no touch equivalent (there's no modifier key),
+  but its one consumer -- Shift+click group-panel-selection for synchronized
+  scrolling -- now has a touch substitute (long-press, see the next bullet),
+  so leaving `isShiftHeld` permanently `false` on iOS (nothing sets it there)
+  is fine as-is rather than something to build a replacement affordance for.
+- ~~`ContentView.swift`, `MultiPanelContainer.swift`, `WindowAccessor.swift`
+  still contain the original macOS mouse/keyboard-driven interaction code...
+  None of this has an iOS touch equivalent yet.~~ **Mostly done.** The core
+  per-panel interaction surface (`PanelInteractiveDICOMView`/
+  `PanelDICOMInteractView` in `MultiPanelContainer.swift`, by far the largest
+  piece -- pan/zoom/window-level/ROI/ruler/angle/eraser/slice-navigation/cine)
+  now has a full iOS touch counterpart in the new
+  `Sources/OpenDicomViewer/PanelTouchInteractView.swift`, using the *same*
+  symbol names (`PanelInteractiveDICOMView`, nested `PanelDICOMInteractView`)
+  so `PanelView` and DICOMModel.swift's cine-playback code needed zero call-site
+  changes -- whichever platform's version of the symbol exists is the only one
+  visible to that build. `PanelScrollerInteractionView` (the per-panel slice
+  scrub track) got the same treatment. See `PanelTouchInteractView.swift`'s
+  extensive header NOTE for the full mouse-to-touch interaction mapping
+  (1-finger touch = tool-dependent, mirrors mouseDown/Dragged/Up; 2-finger pan
+  = window/level, replacing right-click-drag; pinch = zoom; long-press =
+  toggle group-selection, replacing Shift+click; vertical drag while the
+  `.select` tool is active = slice navigation, reusing the one tool mouseDragged
+  did nothing for) and its explicit list of what's *not* ported yet (HU-readout
+  hover-follow, drag-and-drop of a sidebar series row onto a panel -- both
+  tracked as explicit follow-ups, not silently dropped). `WindowAccessor.swift`
+  (NSWindow titlebar/traffic-light customization -- a macOS window-chrome
+  concept with no iOS equivalent at all) and the entire legacy, macOS-only,
+  already-unused-in-the-live-UI `DetailView`/`InteractiveDICOMView`/
+  `ScrollerInteractionView` block in `ContentView.swift` are now gated behind
+  `#if os(macOS)` instead (confirmed dead code via a zero-call-sites check
+  before gating, so nothing was lost on either platform). `ToolPalette`
+  (MultiPanelContainer.swift) gained an iOS-only extra button row for
+  reset/invert/flip/rotate/fit-to-window, which previously only had keyboard
+  shortcuts and no on-screen affordance at all on any platform.
+  `UpdateChecker.swift` (`NSWorkspace.shared.open`) and a stray
+  `Image(nsImage:)` call in `MultiPanelContainer.swift`/`ContentView.swift`
+  (SwiftUI's `Image(nsImage:)`/`Image(uiImage:)` are separate,
+  platform-specific initializers even though the underlying `PlatformImage`
+  they wrap is unified) also needed platform-conditional fixes to compile for
+  iOS at all, found via an exhaustive project-wide sweep for any unconditional
+  `NS*`-prefixed symbol -- see that audit's results in this file's git history
+  if a similar gap needs re-checking later.
+
+**IMPORTANT CAVEAT:** none of the touch-layer code above has been compiled,
+by anyone, on anything, yet -- and unlike the DCMTKHelper/MPREngine fixes
+earlier in this doc, a macOS `swift build` *cannot* catch mistakes in it: with
+`.iOS(.v17)` not yet back in `Package.swift`'s `platforms:` (step 0 below),
+the Swift compiler never even parses `#if os(iOS)` code in a macOS build, so
+`swift build` succeeding proves nothing about whether `PanelTouchInteractView.swift`
+or any of the other `#if os(iOS)` branches above actually compile. This will
+only get real compiler feedback once step 0 below is done and an actual Xcode
+iOS App target (steps 1-3) builds for a real iOS destination. Expect a
+debugging pass at that point, the same way the DCMTK cross-compile itself took
+several rounds against real build output -- this was written as carefully as
+possible against the exact macOS implementation it mirrors (including reading
+the full ~1000-line `PanelDICOMInteractView` source, not just a summary of
+it), but "carefully written, never compiled" is a fundamentally different risk
+profile from changes a macOS build could actually verify.
+
+Remaining known gaps, not blockers for a first buildable iOS target but worth
+tracking:
+- HU-readout live-follow (no touch "hover"), and ruler/angle preview lines
+  between the first and second tap, are not ported -- see the header NOTE in
+  `PanelTouchInteractView.swift`.
+- Drag-and-drop of a sidebar series row onto a panel (`NSItemProvider`-based
+  on macOS) has no iOS destination-side handling -- needs its own UX design
+  pass (e.g. tap-to-assign for compact-width iPhone) rather than a mechanical
+  port; `model.assignSeriesToPanel`/`model.load(url:)` are ready for it
+  whenever that lands.
+- `UpdateChecker.swift`'s GitHub-releases-`.dmg` update checker is
+  macOS-distribution-specific by design; it now compiles for iOS but doesn't
+  make product sense there as-is (an iOS build would use App Store/TestFlight
+  updates instead) -- whether/how to adapt or disable it on iOS is a product
+  decision, not a build fix.
 
 None of the above blocks creating and committing the Xcode project itself --
-they'll surface as build errors when you actually try to compile for an iOS
-destination, at which point they can be tackled one at a time with real
-compiler feedback (something this sandbox cannot provide, since it has no
-Xcode/iOS SDK).
+remaining issues will surface as build errors when you actually try to
+compile for an iOS destination, at which point they can be tackled one at a
+time with real compiler feedback (something this sandbox cannot provide,
+since it has no Xcode/iOS SDK).
 
 ## 5. Cross-compiling DCMTK + OpenJPEG for iOS
 

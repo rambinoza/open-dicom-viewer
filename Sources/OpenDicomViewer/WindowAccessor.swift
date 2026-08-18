@@ -5,8 +5,19 @@
 // hides the titlebar, removes traffic light buttons, enables
 // window dragging by background, and installs a key interceptor
 // for IME-independent keyboard shortcuts.
+//
+// NOTE (iOS port): entirely macOS window-chrome/AppKit concepts (NSWindow titlebar/traffic
+// lights, NSEvent-based key interception) with no iOS equivalent -- a standard iOS app has no
+// titlebar to customize. This whole file is gated behind `#if os(macOS)`; SwiftPM compiles
+// every .swift file in a target regardless of whether anything calls into it, so `import
+// AppKit` alone (even with the file's one caller, ContentView.swift's
+// `.background(WindowAccessor(model: model))`, already gated to `#if os(macOS)` there too)
+// would still be a hard compile error on iOS without this. Its keyboard-shortcut fallback
+// path has an iOS equivalent in the on-screen ToolPalette (PanelTouchInteractView.swift's
+// file-level NOTE); the window-chrome customization itself has none, by design.
 // Licensed under the MIT License. See LICENSE for details.
 
+#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -119,3 +130,4 @@ struct WindowAccessor: NSViewRepresentable {
         nsView.model = model
     }
 }
+#endif

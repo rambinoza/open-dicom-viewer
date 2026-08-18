@@ -391,6 +391,7 @@ class DICOMModel: ObservableObject {
             NSEvent.removeMonitor(monitor)
         }
         #endif
+        securityScopedURL?.stopAccessingSecurityScopedResource()
         for (_, timer) in cineTimers {
             timer.invalidate()
         }
@@ -722,14 +723,36 @@ class DICOMModel: ObservableObject {
     }
     #else
     // iOS has no NSOpenPanel equivalent for arbitrary folder/file browsing from a model class.
-    // The iOS entry point uses SwiftUI's `.fileImporter`/UIDocumentPickerViewController from the
-    // view layer instead, which then calls `load(url:)` directly with the picked URL. This is
-    // planned as part of the touch-native iOS interaction layer (see project task list).
+    // The iOS entry point uses SwiftUI's `.fileImporter` from the view layer instead
+    // (SidebarView.openFile(), ContentView.swift), which then calls `load(url:)` directly
+    // with the picked URL -- see the security-scope NOTE on `load(url:)` below for what that
+    // needed here specifically.
     #endif
 
+    /// Holds the currently-active security-scoped URL (if any) so its scope can be released
+    /// when a new dataset is loaded, without releasing it prematurely -- see the NOTE in
+    /// `load(url:)` below.
+    private var securityScopedURL: URL? = nil
+
     func load(url: URL) {
+        // NOTE (iOS port): this used to release the security scope via `defer` at the end of
+        // this function's synchronous portion -- but the actual directory scan/file load
+        // (scanDirectory/loadSingleFile below) runs asynchronously inside the
+        // DispatchQueue.main.async block just below, so the scope was being released before
+        // that async work ever ran. Invisible on a non-sandboxed macOS build
+        // (`startAccessingSecurityScopedResource()` always returns false there when the app
+        // has no App Sandbox entitlement, so `secured` was always false and the deferred
+        // release was a no-op regardless of timing) -- but a real bug for iOS, where every app
+        // is sandboxed and a `.fileImporter`-picked URL outside the app's own container
+        // genuinely needs its scope held open for as long as files are being read from it.
+        // Now holds the scope open for the lifetime of this dataset (released only when the
+        // NEXT load(url:) call acquires a different URL) instead of trying to precisely
+        // bracket the async scan/load.
+        if let previous = securityScopedURL, previous != url {
+            previous.stopAccessingSecurityScopedResource()
+        }
         let secured = url.startAccessingSecurityScopedResource()
-        defer { if secured { url.stopAccessingSecurityScopedResource() } }
+        securityScopedURL = secured ? url : nil
 
         BenchmarkLogger.shared.start("load_total")
         BenchmarkLogger.shared.log(event: "load_start", dataset: url.lastPathComponent, detail: url.path)
